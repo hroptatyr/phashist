@@ -47,7 +47,7 @@
 #include <stdio.h>
 #include "nifty.h"
 
-typedef uint32_t hash_t;
+typedef uint_fast32_t hash_t;
 
 
 static uint8_t*
@@ -94,6 +94,47 @@ bingo(const uint8_t data[], size_t dlen)
 	return v;
 }
 
+static hash_t
+murmur(const uint8_t data[], size_t dlen)
+{
+/* tokyocabinet's hasher */
+	hash_t v = 19780211U;
+
+	for (size_t i = 0U; i < dlen; i++) {
+		v *= 37U;
+		v += data[i];
+	}
+	return v;
+}
+
+static hash_t
+oat(const uint8_t data[], size_t dlen)
+{
+	hash_t h = 0U;
+
+	for (size_t i = 0U; i < dlen; i++) {
+		h += data[i];
+		h += (h << 10U);
+		h ^= (h >> 6U);
+	}
+
+	h += h << 3U;
+	h ^= h >> 11U;
+	h += h << 15U;
+	return h;
+}
+
+static hash_t
+jsw(const uint8_t data[], size_t dlen)
+{
+	hash_t v = 16777551U;
+
+	for (size_t i = 0U; i < dlen; i++) {
+		v = (v << 1 | v >> 31) ^ data[i];
+	}
+	return v;
+}
+
 
 #include "phashist.yucc"
 
@@ -112,7 +153,7 @@ main(int argc, char *argv[])
 		size_t kz = strlen((char*)kp);
 		hash_t kh = bingo(kp, kz);
 
-		printf("%04x\t%s -> %x\n", kh & 0x1ffU, kp, kh);
+		printf("%04lx\t%s -> %lx\n", kh & 0x3ffU, kp, kh);
 		kp += kz;
 	}
 
