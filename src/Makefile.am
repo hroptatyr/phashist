@@ -21,6 +21,7 @@ EXTRA_DIST += version.c.in
 
 bin_PROGRAMS += phashist
 phashist_SOURCES = phashist.c phashist.yuck
+phashist_SOURCES += nifty.h
 BUILT_SOURCES += phashist.yucc
 
 

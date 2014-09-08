@@ -34,68 +34,64 @@
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  ***/
+#if !defined _GNU_SOURCE
+# define _GNU_SOURCE
+#endif	/* !_GNU_SOURCE */
 #if defined HAVE_CONFIG_H
 # include "config.h"
 #endif	/* HAVE_CONFIG_H */
 #include <unistd.h>
+#include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+#include "nifty.h"
 
-#define countof(x)		(sizeof(x) / sizeof(*x))
-//#define WORDS_BIGENDIAN
+typedef uint32_t hash_t;
 
 
-static uint8_t _tbl[256U];
-
-static uint8_t
-_rvrs(uint8_t i)
+static uint8_t*
+read_keys(const char *fn)
 {
-	unsigned int j;
+	size_t zr = 0UL;
+	size_t ro = 0UL;
+	char *res = NULL;
+	char *line = NULL;
+	size_t llen = 0U;
+	FILE *fp;
 
-	j = (i * 0x0802LU & 0x22110LU);
-	j |= (i * 0x8020LU & 0x88440LU);
-	j *= 0x10101LU;
-	j >>= 16U;
-	return (uint8_t)j;
-}
-
-static void
-init_tbl(uint8_t poly)
-{
-#if !defined WORDS_BIGENDIAN
-	poly = _rvrs(poly);
-#endif	/* !WORDS_BIGENDIAN */
-
-	for (size_t i = 0U; i < countof(_tbl); i++) {
-		uint8_t v = (uint8_t)i;
-
-		for (size_t j = 0U; j < 8U; j++) {
-#if defined WORDS_BIGENDIAN
-			v <<= 1U;
-			if (v & 0x80U) {
-				v ^= poly;
-			}
-#else  /* !WORDS_BIGENDIAN */
-			v >>= 1U;
-			if (v & 0x1U) {
-				v ^= poly;
-			}
-#endif	/* WORDS_BIGENDIAN */
-		}
-		_tbl[i] = v;
+	if (fn == NULL) {
+		fp = stdin;
+	} else if ((fp = fopen(fn, "r")) == NULL) {
+		return NULL;
 	}
-	return;
+
+	for (ssize_t nrd; (nrd = getline(&line, &llen, fp)) > 0;) {
+		if (ro + nrd + 1U >= zr) {
+			zr = ((ro + nrd + 1U) / 64U + 2U) * 64U;
+			res = realloc(res, zr * sizeof(*res));
+		}
+		memcpy(res + ro, line, nrd - 1);
+		ro += nrd - 1;
+		res[ro++] = '\0';
+		res[ro] = '\0';
+	}
+	if (line != NULL) {
+		free(line);
+	}
+	return (uint8_t*)res;
 }
 
-static uint8_t
-crc8(uint8_t data[], size_t dlen)
+static hash_t
+bingo(const uint8_t data[], size_t dlen)
 {
-	uint8_t rem = 0U;
+	hash_t v = 0U;
 
 	for (size_t i = 0U; i < dlen; i++) {
-		/* special case for crc8 */
-		rem = _tbl[data[i] ^ rem];
+		v *= 33U;
+		v ^= data[i];
 	}
-	return rem;
+	return v;
 }
 
 
@@ -112,10 +108,13 @@ main(int argc, char *argv[])
 		goto out;
 	}
 
-	init_tbl(0xd5U);
-	printf("0x%hhx\n", crc8("GET", 3U));
-	printf("0x%hhx\n", crc8("PUT", 3U));
-	printf("0x%hhx\n", crc8("DELETE", 6U));
+	for (uint8_t *k = read_keys(*argi->args), *kp = k; *kp; kp++) {
+		size_t kz = strlen((char*)kp);
+		hash_t kh = bingo(kp, kz);
+
+		printf("%04x\t%s -> %x\n", kh & 0x1ffU, kp, kh);
+		kp += kz;
+	}
 
 out:
 	yuck_free(argi);
