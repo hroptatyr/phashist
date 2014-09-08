@@ -19,6 +19,10 @@ SUFFIXES =
 CLEANFILES += version.c
 EXTRA_DIST += version.c.in
 
+bin_PROGRAMS += phashist
+phashist_SOURCES = phashist.c phashist.yuck
+BUILT_SOURCES += phashist.yucc
+
 
 ## version rules
 version.c: version.c.in $(top_builddir)/.version
