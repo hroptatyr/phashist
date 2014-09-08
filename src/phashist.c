@@ -38,6 +38,65 @@
 # include "config.h"
 #endif	/* HAVE_CONFIG_H */
 #include <unistd.h>
+#include <stdint.h>
+
+#define countof(x)		(sizeof(x) / sizeof(*x))
+//#define WORDS_BIGENDIAN
+
+
+static uint8_t _tbl[256U];
+
+static uint8_t
+_rvrs(uint8_t i)
+{
+	unsigned int j;
+
+	j = (i * 0x0802LU & 0x22110LU);
+	j |= (i * 0x8020LU & 0x88440LU);
+	j *= 0x10101LU;
+	j >>= 16U;
+	return (uint8_t)j;
+}
+
+static void
+init_tbl(uint8_t poly)
+{
+#if !defined WORDS_BIGENDIAN
+	poly = _rvrs(poly);
+#endif	/* !WORDS_BIGENDIAN */
+
+	for (size_t i = 0U; i < countof(_tbl); i++) {
+		uint8_t v = (uint8_t)i;
+
+		for (size_t j = 0U; j < 8U; j++) {
+#if defined WORDS_BIGENDIAN
+			v <<= 1U;
+			if (v & 0x80U) {
+				v ^= poly;
+			}
+#else  /* !WORDS_BIGENDIAN */
+			v >>= 1U;
+			if (v & 0x1U) {
+				v ^= poly;
+			}
+#endif	/* WORDS_BIGENDIAN */
+		}
+		_tbl[i] = v;
+	}
+	return;
+}
+
+static uint8_t
+crc8(uint8_t data[], size_t dlen)
+{
+	uint8_t rem = 0U;
+
+	for (size_t i = 0U; i < dlen; i++) {
+		/* special case for crc8 */
+		rem = _tbl[data[i] ^ rem];
+	}
+	return rem;
+}
 
 
 #include "phashist.yucc"
@@ -53,7 +112,11 @@ main(int argc, char *argv[])
 		goto out;
 	}
 
-	;
+	init_tbl(0xd5U);
+	printf("0x%hhx\n", crc8("GET", 3U));
+	printf("0x%hhx\n", crc8("PUT", 3U));
+	printf("0x%hhx\n", crc8("DELETE", 6U));
+
 out:
 	yuck_free(argi);
 	return rc;
