@@ -1,4 +1,4 @@
-/*** phashist -- a prefix hash table generator
+/*** keys.c -- key handling
  *
  * Copyright (C) 2014 Sebastian Freundt
  *
@@ -43,96 +43,81 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <stdio.h>
 #include "nifty.h"
 #include "keys.h"
 
-typedef uint_fast32_t phash_t;
-
 
-static phash_t
-bingo(phkey_t data, size_t dlen)
+phvec_t
+ph_read_keys(const char *fn)
 {
-	phash_t v = 0U;
+	char *line = NULL;
+	size_t llen = 0U;
+	FILE *fp;
+	phvec_t res;
+	uint8_t *pool;
+	size_t ro = 0UL;
+	size_t zr;
 
-	for (size_t i = 0U; i < dlen; i++) {
-		v *= 33U;
-		v ^= data[i];
+	if (fn == NULL) {
+		fp = stdin;
+	} else if ((fp = fopen(fn, "r")) == NULL) {
+		return NULL;
 	}
-	return v;
+
+	/* we'll return at least a phkv object here*/
+	res = malloc(sizeof(*res) + 64U * sizeof(*res->k));
+	res->n = 0U;
+	pool = malloc((zr = 256U) * sizeof(*pool));
+
+	for (ssize_t nrd; (nrd = getline(&line, &llen, fp)) > 0; res->n++) {
+		/* store n-th position */
+		if (LIKELY(res->n) && UNLIKELY(!(res->n % 64U))) {
+			const size_t nu = res->n + 64U;
+			res = realloc(res, sizeof(*res) + nu * sizeof(*res->k));
+		}
+		res->k[res->n] = (void*)(uintptr_t)ro;
+
+		/* store string in pool */
+		if (ro + nrd + 1U >= zr) {
+			while ((zr <<= 1U, ro + nrd + 1U >= zr));
+			pool = realloc(pool, zr * sizeof(*pool));
+		}
+		memcpy(pool + ro, line, nrd - 1);
+		ro += nrd - 1;
+		pool[ro++] = '\0';
+		pool[ro] = '\0';
+	}
+	/* as a service, store one more pool value */
+	if (LIKELY(res->n) && UNLIKELY(!(res->n % 64U))) {
+		const size_t nu = res->n + 64U;
+		res = realloc(res, sizeof(*res) + nu * sizeof(*res->k));
+	}
+	res->k[res->n] = (void*)(uintptr_t)ro;
+
+	if (line != NULL) {
+		free(line);
+	}
+	fclose(fp);
+
+	/* massage res for returning */
+	for (size_t i = 0U; i < res->n; i++) {
+		res->k[i] = pool + (size_t)(uintptr_t)res->k[i];
+	}
+	return res;
 }
 
-static phash_t
-murmur(phkey_t data, size_t dlen)
+void
+ph_free_keys(phvec_t kv)
 {
-/* tokyocabinet's hasher */
-	phash_t v = 19780211U;
-
-	for (size_t i = 0U; i < dlen; i++) {
-		v *= 37U;
-		v += data[i];
+	if (UNLIKELY(kv == NULL)) {
+		return;
+	} else if (LIKELY(kv->k[0U] != NULL)) {
+		free(deconst(kv->k[0U]));
 	}
-	return v;
+	free(kv);
+	return;
 }
 
-static phash_t
-oat(phkey_t data, size_t dlen)
-{
-	phash_t h = 0U;
-
-	for (size_t i = 0U; i < dlen; i++) {
-		h += data[i];
-		h += (h << 10U);
-		h ^= (h >> 6U);
-	}
-
-	h += h << 3U;
-	h ^= h >> 11U;
-	h += h << 15U;
-	return h;
-}
-
-static phash_t
-jsw(phkey_t data, size_t dlen)
-{
-	phash_t v = 16777551U;
-
-	for (size_t i = 0U; i < dlen; i++) {
-		v = (v << 1 | v >> 31) ^ data[i];
-	}
-	return v;
-}
-
-
-#include "phashist.yucc"
-
-int
-main(int argc, char *argv[])
-{
-	yuck_t argi[1U] = {PHASHIST_CMD_NONE};
-	int rc = 0;
-
-	if (yuck_parse(argi, argc, argv) < 0) {
-		rc = 1;
-		goto out;
-	}
-
-	phvec_t keys = ph_read_keys(*argi->args);
-
-	for (size_t i = 0U; i < keys->n; i++) {
-		phkey_t kp = phvec_key(keys, i);
-		size_t kz = phvec_keylen(keys, i);
-		phash_t kh = jsw(kp, kz);
-
-		printf("%04lx\t%s -> %lx\n", kh & 0xffU, kp, kh);
-		kp += kz;
-	}
-
-	ph_free_keys(keys);
-
-out:
-	yuck_free(argi);
-	return rc;
-}
-
-/* phashist.c ends here */
+/* keys.c ends here */
