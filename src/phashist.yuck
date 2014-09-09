@@ -1,4 +1,2 @@
 Usage: phashist
 
-  --hash=FUN            Use FUN as hash function, one of:
-                        bingo, oat, jsw, murmur

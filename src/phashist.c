@@ -47,63 +47,7 @@
 #include <string.h>
 #include "nifty.h"
 #include "keys.h"
-
-typedef uint_fast32_t phash_t;
-typedef uint_fast32_t phcnt_t;
-
-
-static phash_t
-bingo(phkey_t data, size_t dlen, phash_t param)
-{
-	phash_t v = 0U;
-
-	for (size_t i = 0U; i < dlen; i++) {
-		v *= param;
-		v ^= data[i];
-	}
-	return v;
-}
-
-static phash_t
-murmur(phkey_t data, size_t dlen, phash_t param)
-{
-/* tokyocabinet's hasher */
-	phash_t v = 19780211U;
-
-	for (size_t i = 0U; i < dlen; i++) {
-		v *= param;
-		v += data[i];
-	}
-	return v;
-}
-
-static phash_t
-oat(phkey_t data, size_t dlen, phash_t param)
-{
-	phash_t h = param;
-
-	for (size_t i = 0U; i < dlen; i++) {
-		h += data[i];
-		h += (h << 10U);
-		h ^= (h >> 6U);
-	}
-
-	h += h << 3U;
-	h ^= h >> 11U;
-	h += h << 15U;
-	return h;
-}
-
-static phash_t
-jsw(phkey_t data, size_t dlen, phash_t param)
-{
-	phash_t v = param;
-
-	for (size_t i = 0U; i < dlen; i++) {
-		v = (v << 1 | v >> 31) ^ data[i];
-	}
-	return v;
-}
+#include "phash.h"
 
 
 typedef struct {
@@ -162,21 +106,10 @@ main(int argc, char *argv[])
 {
 	yuck_t argi[1U] = {PHASHIST_CMD_NONE};
 	int rc = 0;
-	phash_t(*hf)(phkey_t, size_t, phash_t) = bingo;
 
 	if (yuck_parse(argi, argc, argv) < 0) {
 		rc = 1;
 		goto out;
-	}
-
-	if (argi->hash_arg == NULL) {
-		;
-	} else if (!strcmp(argi->hash_arg, "oat")) {
-		hf = oat;
-	} else if (!strcmp(argi->hash_arg, "jsw")) {
-		hf = jsw;
-	} else if (!strcmp(argi->hash_arg, "murmur")) {
-		hf = murmur;
 	}
 
 	phvec_t keys = ph_read_keys(*argi->args);
@@ -197,7 +130,7 @@ main(int argc, char *argv[])
 		for (size_t i = 0U; i < keys->n; i++) {
 			phkey_t kp = phvec_key(keys, i);
 			size_t kz = phvec_keylen(keys, i);
-			phash_t kh = murmur(kp, kz, v);
+			phash_t kh = phash(kp, kz, v);
 
 			cnt[kh % countof(cnt)]++;
 		}
