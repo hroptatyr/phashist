@@ -111,22 +111,77 @@ main(int argc, char *argv[])
 {
 	yuck_t argi[1U] = {PHASHIST_CMD_NONE};
 	int rc = 0;
+	phash_t(*hf)(phkey_t, size_t) = bingo;
 
 	if (yuck_parse(argi, argc, argv) < 0) {
 		rc = 1;
 		goto out;
 	}
 
+	if (argi->hash_arg == NULL) {
+		;
+	} else if (!strcmp(argi->hash_arg, "oat")) {
+		hf = oat;
+	} else if (!strcmp(argi->hash_arg, "jsw")) {
+		hf = jsw;
+	} else if (!strcmp(argi->hash_arg, "murmur")) {
+		hf = murmur;
+	}
+
 	phvec_t keys = ph_read_keys(*argi->args);
+	long unsigned int nb = keys->n;
+	if (argi->buckets_arg) {
+		nb = strtoul(argi->buckets_arg, NULL, 0);
+	}
+	size_t min = -1UL, max = 0UL;
 
 	for (size_t i = 0U; i < keys->n; i++) {
-		phkey_t kp = phvec_key(keys, i);
-		size_t kz = phvec_keylen(keys, i);
-		phash_t kh = jsw(kp, kz);
+		const size_t len = phvec_keylen(keys, i);
 
-		printf("%04lx\t%s -> %lx\n", kh & 0xffU, kp, kh);
-		kp += kz;
+		if (len < min) {
+			min = len;
+		}
+		if (len > max) {
+			max = len;
+		}
 	}
+	with (uint_fast32_t lens[max - min + 1U]) {
+		memset(lens, 0, sizeof(lens));
+
+		for (size_t i = 0U; i < keys->n; i++) {
+			const size_t kz = phvec_keylen(keys, i);
+
+			lens[kz - min]++;
+		}
+
+		for (size_t i = 0U; i < countof(lens); i++) {
+			printf("%zu\t%zu keys\n", i + min, lens[i]);
+		}
+	}
+
+#if 0
+	for (; nb < 16384; nb++) {
+		with (uint_fast32_t cnt[nb]) {
+			size_t ncoll = 0U;
+			memset(cnt, 0, sizeof(cnt));
+
+			for (size_t i = 0U; i < keys->n; i++) {
+				phkey_t kp = phvec_key(keys, i);
+				size_t kz = phvec_keylen(keys, i);
+				phash_t kh = hf(kp, kz);
+
+				cnt[kh % countof(cnt)]++;
+			}
+
+			for (size_t i = 0U; i < countof(cnt); i++) {
+				if (cnt[i] > 1U) {
+					ncoll++;
+				}
+			}
+			printf("%lu\t%zu collisions\n", nb, ncoll);
+		}
+	}
+#endif
 
 	ph_free_keys(keys);
 

@@ -1,2 +1,5 @@
 Usage: phashist
 
+  --buckets=N           Use a table with this many buckets.
+  --hash=FUN            Use FUN as hash function, one of:
+                        bingo, oat, jsw, murmur
