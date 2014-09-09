@@ -1,4 +1,4 @@
 /* -*- c -*- */
 #include "version.h"
 
-const char echse_version_string[] = "YUCK_SCMVER_VERSION";
+const char phashist_version_string[] = "YUCK_SCMVER_VERSION";
