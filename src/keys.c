@@ -102,7 +102,7 @@ ph_read_keys(const char *fn)
 	fclose(fp);
 
 	/* massage res for returning */
-	for (size_t i = 0U; i < res->n; i++) {
+	for (size_t i = 0U; i <= res->n; i++) {
 		res->k[i] = pool + (size_t)(uintptr_t)res->k[i];
 	}
 	return res;
