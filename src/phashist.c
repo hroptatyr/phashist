@@ -44,41 +44,43 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "nifty.h"
 #include "keys.h"
 
 typedef uint_fast32_t phash_t;
+typedef uint_fast32_t phcnt_t;
 
 
 static phash_t
-bingo(phkey_t data, size_t dlen)
+bingo(phkey_t data, size_t dlen, phash_t param)
 {
 	phash_t v = 0U;
 
 	for (size_t i = 0U; i < dlen; i++) {
-		v *= 33U;
+		v *= param;
 		v ^= data[i];
 	}
 	return v;
 }
 
 static phash_t
-murmur(phkey_t data, size_t dlen)
+murmur(phkey_t data, size_t dlen, phash_t param)
 {
 /* tokyocabinet's hasher */
 	phash_t v = 19780211U;
 
 	for (size_t i = 0U; i < dlen; i++) {
-		v *= 37U;
+		v *= param;
 		v += data[i];
 	}
 	return v;
 }
 
 static phash_t
-oat(phkey_t data, size_t dlen)
+oat(phkey_t data, size_t dlen, phash_t param)
 {
-	phash_t h = 0U;
+	phash_t h = param;
 
 	for (size_t i = 0U; i < dlen; i++) {
 		h += data[i];
@@ -93,14 +95,63 @@ oat(phkey_t data, size_t dlen)
 }
 
 static phash_t
-jsw(phkey_t data, size_t dlen)
+jsw(phkey_t data, size_t dlen, phash_t param)
 {
-	phash_t v = 16777551U;
+	phash_t v = param;
 
 	for (size_t i = 0U; i < dlen; i++) {
 		v = (v << 1 | v >> 31) ^ data[i];
 	}
 	return v;
+}
+
+
+typedef struct {
+	size_t min;
+	size_t max;
+	phcnt_t lens[];
+} *phvec_stats_t;
+
+static phvec_stats_t
+phvec_stats(phvec_t kv)
+{
+	size_t min = -1UL, max = 0UL;
+	phvec_stats_t res;
+
+	if (UNLIKELY(kv->n == 0U)) {
+		return NULL;
+	}
+	for (size_t i = 0U; i < kv->n; i++) {
+		const size_t len = phvec_keylen(kv, i);
+
+		if (len < min) {
+			min = len;
+		}
+		if (len > max) {
+			max = len;
+		}
+	}
+
+	res = malloc(sizeof(*res) + (max - min + 1U) * sizeof(*res->lens));
+	res->min = min;
+	res->max = max;
+	memset(res->lens, 0, (max - min + 1U) * sizeof(*res->lens));
+	for (size_t i = 0U; i < kv->n; i++) {
+		const size_t kz = phvec_keylen(kv, i);
+
+		res->lens[kz - min]++;
+	}
+	return res;
+}
+
+static void
+phvec_free_stats(phvec_stats_t ks)
+{
+	if (UNLIKELY(ks == NULL)) {
+		return;
+	}
+	free(ks);
+	return;
 }
 
 
@@ -111,7 +162,7 @@ main(int argc, char *argv[])
 {
 	yuck_t argi[1U] = {PHASHIST_CMD_NONE};
 	int rc = 0;
-	phash_t(*hf)(phkey_t, size_t) = bingo;
+	phash_t(*hf)(phkey_t, size_t, phash_t) = bingo;
 
 	if (yuck_parse(argi, argc, argv) < 0) {
 		rc = 1;
@@ -129,60 +180,40 @@ main(int argc, char *argv[])
 	}
 
 	phvec_t keys = ph_read_keys(*argi->args);
-	long unsigned int nb = keys->n;
-	if (argi->buckets_arg) {
-		nb = strtoul(argi->buckets_arg, NULL, 0);
-	}
-	size_t min = -1UL, max = 0UL;
-
-	for (size_t i = 0U; i < keys->n; i++) {
-		const size_t len = phvec_keylen(keys, i);
-
-		if (len < min) {
-			min = len;
-		}
-		if (len > max) {
-			max = len;
-		}
-	}
-	with (uint_fast32_t lens[max - min + 1U]) {
-		memset(lens, 0, sizeof(lens));
-
-		for (size_t i = 0U; i < keys->n; i++) {
-			const size_t kz = phvec_keylen(keys, i);
-
-			lens[kz - min]++;
-		}
-
-		for (size_t i = 0U; i < countof(lens); i++) {
-			printf("%zu\t%zu keys\n", i + min, lens[i]);
-		}
-	}
+	phvec_stats_t ks = phvec_stats(keys);
 
 #if 0
-	for (; nb < 16384; nb++) {
-		with (uint_fast32_t cnt[nb]) {
-			size_t ncoll = 0U;
-			memset(cnt, 0, sizeof(cnt));
-
-			for (size_t i = 0U; i < keys->n; i++) {
-				phkey_t kp = phvec_key(keys, i);
-				size_t kz = phvec_keylen(keys, i);
-				phash_t kh = hf(kp, kz);
-
-				cnt[kh % countof(cnt)]++;
-			}
-
-			for (size_t i = 0U; i < countof(cnt); i++) {
-				if (cnt[i] > 1U) {
-					ncoll++;
-				}
-			}
-			printf("%lu\t%zu collisions\n", nb, ncoll);
-		}
+	for (size_t i = ks->min; i <= ks->max; i++) {
+		printf("%zu\t%zu keys\n", i, ks->lens[i - ks->min]);
 	}
 #endif
 
+	size_t best_ncoll = -1UL;
+	for (phash_t v = 33U; v <= 16777551U; v += 2) {
+		uint_fast32_t cnt[843U];
+		size_t ncoll = 0U;
+
+		memset(cnt, 0, sizeof(cnt));
+		for (size_t i = 0U; i < keys->n; i++) {
+			phkey_t kp = phvec_key(keys, i);
+			size_t kz = phvec_keylen(keys, i);
+			phash_t kh = murmur(kp, kz, v);
+
+			cnt[kh % countof(cnt)]++;
+		}
+
+		for (size_t i = 0U; i <= countof(cnt); i++) {
+			if (cnt[i] > 1U) {
+				ncoll++;
+			}
+		}
+		if (ncoll < best_ncoll) {
+			best_ncoll = ncoll;
+			printf("%lu\t%zu collisions\n", v, ncoll);
+		}
+	}
+
+	phvec_free_stats(ks);
 	ph_free_keys(keys);
 
 out:
