@@ -47,18 +47,25 @@
 #include <stdio.h>
 #include "nifty.h"
 
-typedef uint_fast32_t hash_t;
+typedef uint_fast32_t phash_t;
+typedef const uint8_t *phkey_t;
+
+typedef struct {
+	size_t n;
+	phkey_t k[];
+} *phvec_t;
 
 
-static uint8_t*
+static phvec_t
 read_keys(const char *fn)
 {
-	size_t zr = 0UL;
-	size_t ro = 0UL;
-	char *res = NULL;
 	char *line = NULL;
 	size_t llen = 0U;
 	FILE *fp;
+	phvec_t res;
+	uint8_t *pool;
+	size_t ro = 0UL;
+	size_t zr;
 
 	if (fn == NULL) {
 		fp = stdin;
@@ -66,26 +73,86 @@ read_keys(const char *fn)
 		return NULL;
 	}
 
-	for (ssize_t nrd; (nrd = getline(&line, &llen, fp)) > 0;) {
-		if (ro + nrd + 1U >= zr) {
-			zr = ((ro + nrd + 1U) / 64U + 2U) * 64U;
-			res = realloc(res, zr * sizeof(*res));
+	/* we'll return at least a phkv object here*/
+	res = malloc(sizeof(*res) + 64U * sizeof(*res->k));
+	res->n = 0U;
+	pool = malloc((zr = 256U) * sizeof(*pool));
+
+	for (ssize_t nrd; (nrd = getline(&line, &llen, fp)) > 0; res->n++) {
+		/* store n-th position */
+		if (LIKELY(res->n) && UNLIKELY(!(res->n % 64U))) {
+			const size_t nu = res->n + 64U;
+			res = realloc(res, sizeof(*res) + nu * sizeof(*res->k));
 		}
-		memcpy(res + ro, line, nrd - 1);
+		res->k[res->n] = (void*)(uintptr_t)ro;
+
+		/* store string in pool */
+		if (ro + nrd + 1U >= zr) {
+			while ((zr <<= 1U, ro + nrd + 1U >= zr));
+			pool = realloc(pool, zr * sizeof(*pool));
+		}
+		memcpy(pool + ro, line, nrd - 1);
 		ro += nrd - 1;
-		res[ro++] = '\0';
-		res[ro] = '\0';
+		pool[ro++] = '\0';
+		pool[ro] = '\0';
 	}
+	/* as a service, store one more pool value */
+	if (LIKELY(res->n) && UNLIKELY(!(res->n % 64U))) {
+		const size_t nu = res->n + 64U;
+		res = realloc(res, sizeof(*res) + nu * sizeof(*res->k));
+	}
+	res->k[res->n] = (void*)(uintptr_t)ro;
+
 	if (line != NULL) {
 		free(line);
 	}
-	return (uint8_t*)res;
+	fclose(fp);
+
+	/* massage res for returning */
+	for (size_t i = 0U; i < res->n; i++) {
+		res->k[i] = pool + (size_t)(uintptr_t)res->k[i];
+	}
+	return res;
 }
 
-static hash_t
-bingo(const uint8_t data[], size_t dlen)
+static void
+free_keys(phvec_t kv)
 {
-	hash_t v = 0U;
+	if (UNLIKELY(kv == NULL)) {
+		return;
+	} else if (LIKELY(kv->k[0U] != NULL)) {
+		free(deconst(kv->k[0U]));
+	}
+	free(kv);
+	return;
+}
+
+static inline phkey_t
+phkey(phvec_t kv, size_t i)
+{
+/* return the i-th key */
+	return kv->k[i];
+}
+
+static inline  const char*
+keystr(phvec_t kv, size_t i)
+{
+/* return the i-th key as character string */
+	return (const char*)kv->k[i];
+}
+
+static inline size_t
+keylen(phvec_t kv, size_t i)
+{
+/* return the i-th key's length */
+	return kv->k[i + 1U] - kv->k[i] - 1U;
+}
+
+
+static phash_t
+bingo(phkey_t data, size_t dlen)
+{
+	phash_t v = 0U;
 
 	for (size_t i = 0U; i < dlen; i++) {
 		v *= 33U;
@@ -94,11 +161,11 @@ bingo(const uint8_t data[], size_t dlen)
 	return v;
 }
 
-static hash_t
-murmur(const uint8_t data[], size_t dlen)
+static phash_t
+murmur(phkey_t data, size_t dlen)
 {
 /* tokyocabinet's hasher */
-	hash_t v = 19780211U;
+	phash_t v = 19780211U;
 
 	for (size_t i = 0U; i < dlen; i++) {
 		v *= 37U;
@@ -107,10 +174,10 @@ murmur(const uint8_t data[], size_t dlen)
 	return v;
 }
 
-static hash_t
-oat(const uint8_t data[], size_t dlen)
+static phash_t
+oat(phkey_t data, size_t dlen)
 {
-	hash_t h = 0U;
+	phash_t h = 0U;
 
 	for (size_t i = 0U; i < dlen; i++) {
 		h += data[i];
@@ -124,10 +191,10 @@ oat(const uint8_t data[], size_t dlen)
 	return h;
 }
 
-static hash_t
-jsw(const uint8_t data[], size_t dlen)
+static phash_t
+jsw(phkey_t data, size_t dlen)
 {
-	hash_t v = 16777551U;
+	phash_t v = 16777551U;
 
 	for (size_t i = 0U; i < dlen; i++) {
 		v = (v << 1 | v >> 31) ^ data[i];
@@ -149,13 +216,18 @@ main(int argc, char *argv[])
 		goto out;
 	}
 
-	for (uint8_t *k = read_keys(*argi->args), *kp = k; *kp; kp++) {
-		size_t kz = strlen((char*)kp);
-		hash_t kh = bingo(kp, kz);
+	phvec_t keys = read_keys(*argi->args);
 
-		printf("%04lx\t%s -> %lx\n", kh & 0x3ffU, kp, kh);
+	for (size_t i = 0U; i < keys->n; i++) {
+		phkey_t kp = phkey(keys, i);
+		size_t kz = keylen(keys, i);
+		phash_t kh = jsw(kp, kz);
+
+		printf("%04lx\t%s -> %lx\n", kh & 0xffU, kp, kh);
 		kp += kz;
 	}
+
+	free_keys(keys);
 
 out:
 	yuck_free(argi);
