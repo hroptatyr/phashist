@@ -38,6 +38,7 @@
 #define INCLUDED_keys_h_
 
 #include <stdint.h>
+#include <string.h>
 
 typedef const uint8_t *phkey_t;
 
@@ -55,6 +56,14 @@ extern phvec_t ph_read_keys(const char *fn);
 extern void ph_free_keys(phvec_t kv);
 
 
+/**
+ * Compare two keys, much like strcmp(). */
+static inline __attribute__((pure, const)) int
+phkey_cmp(phkey_t k1, phkey_t k2)
+{
+	return strcmp((const char*)k1, (const char*)k2);
+}
+
 /**
  * Return the I-th key in a key vector. */
 static inline phkey_t
@@ -77,6 +86,15 @@ static inline size_t
 phvec_keylen(phvec_t kv, size_t i)
 {
 	return kv->k[i + 1U] - kv->k[i] - 1U;
+}
+
+static inline int
+phvec_keycmp(phvec_t kv, size_t i, size_t j)
+{
+	const phkey_t ki = phvec_key(kv, i);
+	const phkey_t kj = phvec_key(kv, j);
+
+	return phkey_cmp(ki, kj);
 }
 
 #endif	/* INCLUDED_keys_h_ */
