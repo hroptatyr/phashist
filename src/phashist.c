@@ -142,7 +142,7 @@ recalloc(void *x, size_t ol_nmemb, size_t nu_nmemb, size_t membz)
 }
 
 
-static phvec_stats_t
+static __attribute__((unused)) phvec_stats_t
 phvec_stats(phvec_t kv)
 {
 	size_t min = -1UL, max = 0UL;
@@ -174,7 +174,7 @@ phvec_stats(phvec_t kv)
 	return res;
 }
 
-static void
+static __attribute__((unused)) void
 phvec_free_stats(phvec_stats_t ks)
 {
 	if (UNLIKELY(ks == NULL)) {
@@ -705,9 +705,6 @@ main(int argc, char *argv[])
 	}
 
 	with (phvec_t keys = ph_read_keys(*argi->args)) {
-		phvec_stats_t ks = phvec_stats(keys);
-
-
 		switch (argi->cmd) {
 		case PHASHIST_CMD_BUILD:
 			/* find teh hash */
@@ -756,7 +753,6 @@ main(int argc, char *argv[])
 			break;
 		}
 
-		phvec_free_stats(ks);
 		ph_free_keys(keys);
 	}
 
