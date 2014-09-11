@@ -1,2 +1,17 @@
-Usage: phashist
+Usage: phashist COMMAND [KEYS]
+
+  --hash=FUN        Use hash fun out of:
+                    bob, jsw, icke2, oat, murmur, bingo
+                    default: icke2.
+
+
+Usage: phashist build [KEYS]
+
+
+Usage: phashist print [KEYS]
+
+  --lower=N         Only print the lowest N bits of the hashes.
+
+
+Usage: phashist perf [KEYS]
 

@@ -1,4 +1,4 @@
-/*** keys.h -- key handling
+/*** phash.h -- hashes
  *
  * Copyright (C) 2014 Sebastian Freundt
  *
@@ -34,67 +34,33 @@
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  ***/
-#if !defined INCLUDED_keys_h_
-#define INCLUDED_keys_h_
+#if !defined INCLUDED_phash_h_
+#define INCLUDED_phash_h_
 
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
+#include "keys.h"
 
-typedef const uint8_t *phkey_t;
+typedef uint_fast32_t phash_t;
+typedef uint_fast32_t phcnt_t;
 
-typedef struct {
-	size_t n;
-	phkey_t k[];
-} *phvec_t;
-
-
-/**
- * Read strings to match from file and return a key vector. */
-extern phvec_t ph_read_keys(const char *fn);
-
-/* Free resources associated with a key vector */
-extern void ph_free_keys(phvec_t kv);
+typedef enum {
+	PHASH_UNK,
+	PHASH_OAT,
+	PHASH_BINGO,
+	PHASH_ICKE2,
+	PHASH_JSW,
+	PHASH_BOB,
+	PHASH_MURMUR,
+} phfun_t;
 
 
 /**
- * Compare two keys, much like strcmp(). */
-static inline __attribute__((pure, const)) int
-phkey_cmp(phkey_t k1, phkey_t k2)
-{
-	return strcmp((const char*)k1, (const char*)k2);
-}
+ * Calculate hash of KEY of size LEN given SALT (initial/previous hash). */
+extern phash_t phash(phkey_t key, size_t len, phash_t salt);
 
 /**
- * Return the I-th key in a key vector. */
-static inline phkey_t
-phvec_key(phvec_t kv, size_t i)
-{
-	return kv->k[i];
-}
+ * Globally use FUN as hash routine. */
+extern void set_phash(phfun_t fun);
 
-/**
- * Return the I-th key in a key vector as character string. */
-static inline  const char*
-phvec_keystr(phvec_t kv, size_t i)
-{
-	return (const char*)kv->k[i];
-}
-
-/**
- * Return the length (in bytes) of the I-th key in a key vector. */
-static inline size_t
-phvec_keylen(phvec_t kv, size_t i)
-{
-	return kv->k[i + 1U] - kv->k[i] - 1U;
-}
-
-static inline int
-phvec_keycmp(phvec_t kv, size_t i, size_t j)
-{
-	const phkey_t ki = phvec_key(kv, i);
-	const phkey_t kj = phvec_key(kv, j);
-
-	return phkey_cmp(ki, kj);
-}
-
-#endif	/* INCLUDED_keys_h_ */
+#endif	/* INCLUDED_phash_h_ */
