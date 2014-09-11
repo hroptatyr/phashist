@@ -84,12 +84,74 @@ oat(phkey_t data, size_t dlen, phash_t prev)
 static phash_t
 jsw(phkey_t data, size_t dlen, phash_t prev)
 {
-	phash_t v = prev ?: 16777551U;
+	phash_t v = prev ^ 16777551U;
 
 	for (size_t i = 0U; i < dlen; i++) {
-		v = (v << 1 | v >> 31) ^ data[i];
+		v = (v << 1U | v >> 31U) ^ data[i];
 	}
 	return v;
+}
+
+static phash_t
+icke(phkey_t data, const size_t dlen, phash_t prev)
+{
+/* form lower bits from lower bits, and higher bits from higher bits */
+	phash_t x = prev;
+
+	for (size_t i = 0U; i < dlen / 4U; i++, x <<= 1U) {
+		register const phash_t _4 = ((const uint32_t*)data)[i];
+		register phash_t l;
+
+		/* lowest bits */
+		l = _4 & 0x03030303U;
+		l ^= (l >> 6U);
+		l ^= (l >> 12U);
+		l ^= (l >> 18U);
+		x ^= l;
+
+		l = _4 & 0xfcfcfcfcU << 6U;
+		l ^= (l >> 2U);
+		l ^= (l >> 8U);
+		l ^= (l >> 14U);
+		x ^= l;
+	}
+	for (size_t i = ((dlen / 4U) * 4U); i < dlen; i++, x <<= 1U) {
+		x ^= data[i] & 0x03U;
+		x ^= data[i] << (8U + i % 4U);
+	}
+	return x;
+}
+
+static phash_t
+icke2(phkey_t data, const size_t dlen, phash_t prev)
+{
+/* form lower bits from lower bits, and higher bits from higher bits */
+	phash_t x = prev;
+	register phash_t l = 0U;
+	register phash_t h = 0U;
+
+	for (size_t i = 0U; i < dlen / 4U; i++, l <<= 1U, h <<= 1U) {
+		register const phash_t _4 = ((const uint32_t*)data)[i];
+
+		/* lowest bits */
+		l ^= _4 & 0x03030303U;
+		/* higher bits */
+		h ^= _4 & 0xfcfcfcfcU;
+	}
+	for (size_t i = ((dlen / 4U) * 4U); i < dlen; i++, l <<= 1U, h <<= 1U) {
+		l ^= data[i] & 0x03U;
+		h ^= data[i] & 0xfcU;
+	}
+
+	/* now we've got the lowest 2 bits in l, the highest 6 bits in h */
+	l ^= (l >> 6U);
+	l ^= (l >> 12U);
+	l ^= (l >> 18U);
+	h ^= (h >> 3U);
+	h ^= (h >> 11U);
+	h ^= (h >> 17U);
+	x ^= l ^ (h << 8U);
+	return x;
 }
 
 static phash_t
@@ -199,7 +261,7 @@ mix() was built out of 36 single-cycle latency instructions in a
 phash_t
 phash(phkey_t key, size_t len, phash_t salt)
 {
-	return bob(key, len, salt);
+	return icke2(key, len, salt);
 }
 
 /* phash.c ends here */
