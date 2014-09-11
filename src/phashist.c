@@ -668,6 +668,86 @@ fail:
 	return NULL;
 }
 
+static void
+ph_genc(phtups_t tups)
+{
+	puts("#include <stdint.h>\n");
+
+	if (tups->blen >= USE_SCRAMBLE) {
+		if (tups->smax > 0xffffU + 1U) {
+			puts("uint_fast32_t scramble[] = {");
+			for (size_t i = 0; i <= 0xffU; i += 4U) {
+				printf("0x%.8lx, 0x%.8lx, 0x%.8lx, 0x%.8lx,\n",
+				       scramble[i + 0U],
+				       scramble[i + 1U],
+				       scramble[i + 2U],
+				       scramble[i + 3U]);
+			}
+		} else {
+			puts("uint_fast16_t scramble[] = {");
+			for (size_t i = 0U; i <= 0xffU; i+=8) {
+				printf("\
+0x%.4lx, 0x%.4lx, 0x%.4lx, 0x%.4lx, 0x%.4lx, 0x%.4lx, 0x%.4lx, 0x%.4lx,\n",
+				       scramble[i + 0U],
+				       scramble[i + 1U],
+				       scramble[i + 2U],
+				       scramble[i + 3U],
+				       scramble[i + 4U],
+				       scramble[i + 5U],
+				       scramble[i + 6U],
+				       scramble[i + 7U]);
+			}
+		}
+		puts("};\n");
+	}
+	if (tups->blen > 0U) {
+		puts("/* small adjustments to A to make values distinct */");
+
+		if (tups->smax <= 0x100U || tups->blen >= USE_SCRAMBLE) {
+			puts("static uint_fast8_t tab[] = {");
+		} else {
+			puts("static uint_fast16_t tab[] = {");
+		}
+
+		if (tups->blen < 16U) {
+			for (size_t i = 0U; i < tups->blen; i++) {
+				printf("%3lu, ", scramble[tups->bcnt[i]]);
+			}
+		} else if (tups->blen < USE_SCRAMBLE) {
+			for (size_t i = 0U; i < tups->blen; i += 8U) {
+				printf("\
+%lu, %lu, %lu, %lu,  %lu, %lu, %lu, %lu,\n",
+				       scramble[tups->bcnt[i + 0U]],
+				       scramble[tups->bcnt[i + 1U]],
+				       scramble[tups->bcnt[i + 2U]],
+				       scramble[tups->bcnt[i + 3U]],
+				       scramble[tups->bcnt[i + 4U]],
+				       scramble[tups->bcnt[i + 5U]],
+				       scramble[tups->bcnt[i + 6U]],
+				       scramble[tups->bcnt[i + 7U]]);
+			}
+		} else {
+			for (size_t i = 0U; i < tups->blen; i += 8U) {
+				printf("\
+%lu, %lu, %lu, %lu,  %lu, %lu, %lu, %lu,\n",
+				       tups->bcnt[i + 0U],
+				       tups->bcnt[i + 1U],
+				       tups->bcnt[i + 2U],
+				       tups->bcnt[i + 3U],
+				       tups->bcnt[i + 4U],
+				       tups->bcnt[i + 5U],
+				       tups->bcnt[i + 6U],
+				       tups->bcnt[i + 7U]);
+			}
+		}
+		puts("};\n");
+	}
+
+	printf("static const phash_t salt = 0x%zxU * 0x9e3779b9U;\n", tups->salt);
+	printf("static const unsigned int blog = %zuU\n", xilogb(tups->blen));
+	return;
+}
+
 
 #include "phashist.yucc"
 
@@ -711,6 +791,9 @@ main(int argc, char *argv[])
 			if ((t = ph_find(keys)) == NULL) {
 				break;
 			}
+
+			/* generate code */
+			ph_genc(t);
 
 			free_tups(t);
 			break;
