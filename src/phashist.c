@@ -687,8 +687,54 @@ main(int argc, char *argv[])
 	with (phvec_t keys = ph_read_keys(*argi->args)) {
 		phvec_stats_t ks = phvec_stats(keys);
 
-		/* find teh hash */
-		ph_find(keys);
+
+		switch (argi->cmd) {
+		case PHASHIST_CMD_BUILD:
+			/* find teh hash */
+			ph_find(keys);
+			break;
+
+		case PHASHIST_CMD_PERF:;
+			phash_t sum;
+
+			/* performance */
+			sum = 0x94;
+			for (size_t j = 0U; j < 1000000U; j++) {
+				for (size_t i = 0U; i < keys->n; i++) {
+					phkey_t k = phvec_key(keys, i);
+					const size_t z = phvec_keylen(keys, i);
+					sum += phash(k, z, sum);
+				}
+			}
+			printf("sum %zx\n", sum);
+			break;
+
+		case PHASHIST_CMD_PRINT: {
+			phash_t msk = NIL_HASH;
+			long unsigned int n = 32U;
+
+			if (argi->print.lower_arg) {
+				n = strtoul(argi->print.lower_arg, NULL, 0);
+				msk = (1ULL << n) - 1ULL;
+			}
+			if (n == 0U) {
+				break;
+			}
+
+			for (size_t i = 0U; i < keys->n; i++) {
+				phkey_t k = phvec_key(keys, i);
+				const size_t z = phvec_keylen(keys, i);
+				phash_t h = phash(k, z, 0U);
+
+				printf("%0*zx\t%s\n",
+				       (int)((n - 1U) / 4U + 1), h & msk, k);
+			}
+			break;
+		}
+		case PHASHIST_CMD_NONE:
+		default:
+			break;
+		}
 
 		phvec_free_stats(ks);
 		ph_free_keys(keys);

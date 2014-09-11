@@ -1,2 +1,13 @@
-Usage: phashist
+Usage: phashist COMMAND [KEYS]
+
+
+Usage: phashist build [KEYS]
+
+
+Usage: phashist print [KEYS]
+
+  --lower=N         Only print the lowest N bits of the hashes.
+
+
+Usage: phashist perf [KEYS]
 
