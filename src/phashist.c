@@ -580,7 +580,7 @@ failed to map group of size %zu for tab size %zu", j, tups->blen);
 	return true;
 }
 
-static int
+static phtups_t
 ph_find(phvec_t keys)
 {
 /* try and find a perfect hash function
@@ -592,22 +592,20 @@ ph_find(phvec_t keys)
 	phcnt_t badk = 0U;
 	/* how many times did phvec_mkperf() fail */
 	phcnt_t badp;
-	phtups_t tups = make_tups(keys);
+	phtups_t res = make_tups(keys);
 
 	/* more init'ting (could go into make_tups() really */
-	init_scramble(tups->smax);
-	alen_max = tups->smax;
-
-	printf("smax %zu  alen %zu  blen %zu\n", tups->smax, tups->alen, tups->blen);
+	init_scramble(res->smax);
+	alen_max = res->smax;
 
 	/* actually find the hash now */
 	badk = 0U;
 	badp = 0U;
 	for (phash_t trysalt = 1U; ; trysalt++) {
 		/* try and find distinct tuples (a,b) for all keys */
-		phtups_phash(tups, trysalt);
+		phtups_phash(res, trysalt);
 
-		if (phtups_mktab(tups, false) > 0U) {
+		if (phtups_mktab(res, false) > 0U) {
 			/* there are collisions */
 #define RETRY_MKTAB	(4096U)
 			/* didn't find distinct (a,b) */
@@ -617,36 +615,34 @@ ph_find(phvec_t keys)
 
 				/* try and put more bits in (a,b)
 				 * to make distinct (a,b) more likely */
-			} else if (tups->alen < alen_max) {
-				tups->alen *= 2U;
-				printf("alen now %zu\n", tups->alen);
-			} else if (tups->blen < tups->smax) {
-				tups->blen *= 2U;
-				tups->bcnt = realloc(
-					tups->bcnt,
-					tups->blen * sizeof(*tups->bcnt));
-				printf("blen now %zu\n", tups->blen);
+			} else if (res->alen < alen_max) {
+				res->alen *= 2U;
+			} else if (res->blen < res->smax) {
+				res->blen *= 2U;
+				res->bcnt = realloc(
+					res->bcnt,
+					res->blen * sizeof(*res->bcnt));
 			} else {
 				/* we're fucked, count the collisions */
 				errno = 0, error("\
 fatal error: cannot find perfect hash, still %zu collisions",
-						 phtups_mktab(tups, true));
-				return -1;
+						 phtups_mktab(res, true));
+				goto fail;
 			}
 			/* reset and try with larger alen/blen */
 			badk = 0U;
 			badp = 0U;
 
-		} else if (!phtups_perfp(tups)) {
+		} else if (!phtups_perfp(res)) {
 			/* no collisions, but not perfect either */
 #define RETRY_PERFP	(1U)
 			if (++badp < RETRY_PERFP) {
 				continue;
-			} else if (tups->blen < tups->smax) {
-				tups->blen *= 2U;
-				tups->bcnt = realloc(
-					tups->bcnt,
-					tups->blen * sizeof(*tups->bcnt));
+			} else if (res->blen < res->smax) {
+				res->blen *= 2U;
+				res->bcnt = realloc(
+					res->bcnt,
+					res->blen * sizeof(*res->bcnt));
 
 				/* we know this salt got us perfectly
 				 * distinct (a,b) */
@@ -654,20 +650,22 @@ fatal error: cannot find perfect hash, still %zu collisions",
 			} else {
 				errno = 0, error("\
 fatal error: cannot perfect hash");
-				return -1;
+				goto fail;
 			}
 			/* reset badp counter, new salt new luck */
 			badp = 0U;
 		} else {
 			/* yay!!! we've got it */
-			tups->salt = trysalt;
+			res->salt = trysalt;
 			break;
 		}
 	}
-	free_tups(tups);
+	errno = 0, error("built perfect hash table of size %zu", res->blen);
+	return res;
 
-	errno = 0, error("built perfect hash table of size %zu\n", tups->blen);
-	return 0;
+fail:
+	free_tups(res);
+	return NULL;
 }
 
 
@@ -706,10 +704,17 @@ main(int argc, char *argv[])
 
 	with (phvec_t keys = ph_read_keys(*argi->args)) {
 		switch (argi->cmd) {
-		case PHASHIST_CMD_BUILD:
+		case PHASHIST_CMD_BUILD: {
+			phtups_t t;
+
 			/* find teh hash */
-			ph_find(keys);
+			if ((t = ph_find(keys)) == NULL) {
+				break;
+			}
+
+			free_tups(t);
 			break;
+		}
 
 		case PHASHIST_CMD_PERF:;
 			phash_t sum;
