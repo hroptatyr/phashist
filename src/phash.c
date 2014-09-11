@@ -84,7 +84,7 @@ oat(phkey_t data, size_t dlen, phash_t prev)
 static phash_t
 jsw(phkey_t data, size_t dlen, phash_t prev)
 {
-	phash_t v = prev ^ 16777551U;
+	phash_t v = prev ?: 16777551U;
 
 	for (size_t i = 0U; i < dlen; i++) {
 		v = (v << 1U | v >> 31U) ^ data[i];
