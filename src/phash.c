@@ -96,7 +96,6 @@ static phash_t
 icke2(phkey_t data, const size_t dlen, phash_t prev)
 {
 /* form lower bits from lower bits, and higher bits from higher bits */
-	phash_t x = prev;
 	register phash_t l = 0U;
 	register phash_t h = 0U;
 
@@ -106,22 +105,19 @@ icke2(phkey_t data, const size_t dlen, phash_t prev)
 		/* lowest bits */
 		l ^= _4 & 0x07070707U;
 		/* higher bits */
-		h ^= _4 & 0xfefefefeU;
+		h ^= _4 & 0xf8f8f8f8U;
 	}
 	for (size_t i = ((dlen / 4U) * 4U); i < dlen; i++, l <<= 1U, h >>= 1U) {
 		l ^= data[i] & 0x07U;
-		h ^= data[i] & 0xfeU;
+		h ^= data[i] & 0xf8U;
 	}
 
 	/* now we've got the lowest 2 bits in l, the highest 6 bits in h */
-	l ^= (l >> 6U);
-	l ^= (l >> 12U);
-	l ^= (l >> 18U);
-	h ^= (h >> 3U);
-	h ^= (h >> 11U);
-	h ^= (h >> 17U);
-	x ^= l ^ (h << 8U);
-	return x;
+	l ^= (l << 5U);
+	l ^= (l >> 23U);
+	h ^= (h << 11U);
+	h ^= (h >> 19U);
+	return prev ^ l ^ h;
 }
 
 static phash_t
