@@ -317,7 +317,7 @@ phtups_phash(phtups_t ktups, phash_t salt)
 			phash_t h = phash(k, kz, ilev);
 
 			ktups->tups[i].a = alog
-				? (h & 0xffffffffU) >> (32U - alog) : 0U;
+				? (h >> blog) & (ktups->alen - 1U) : 0U;
 			ktups->tups[i].b = blog
 				? h & (ktups->blen - 1U) : 0U;
 		}
