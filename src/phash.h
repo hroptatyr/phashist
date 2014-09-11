@@ -44,9 +44,23 @@
 typedef uint_fast32_t phash_t;
 typedef uint_fast32_t phcnt_t;
 
+typedef enum {
+	PHASH_UNK,
+	PHASH_OAT,
+	PHASH_BINGO,
+	PHASH_ICKE2,
+	PHASH_JSW,
+	PHASH_BOB,
+	PHASH_MURMUR,
+} phfun_t;
+
 
 /**
  * Calculate hash of KEY of size LEN given SALT (initial/previous hash). */
 extern phash_t phash(phkey_t key, size_t len, phash_t salt);
+
+/**
+ * Globally use FUN as hash routine. */
+extern void set_phash(phfun_t fun);
 
 #endif	/* INCLUDED_phash_h_ */

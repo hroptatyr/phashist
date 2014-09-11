@@ -1,5 +1,9 @@
 Usage: phashist COMMAND [KEYS]
 
+  --hash=FUN        Use hash fun out of:
+                    bob, jsw, icke2, oat, murmur, bingo
+                    default: icke2.
+
 
 Usage: phashist build [KEYS]
 

@@ -684,6 +684,26 @@ main(int argc, char *argv[])
 		goto out;
 	}
 
+	if (argi->hash_arg) {
+		const char *h = argi->hash_arg;
+		phfun_t f = PHASH_UNK;
+
+		if (!strcmp(h, "bob")) {
+			f = PHASH_BOB;
+		} else if (!strcmp(h, "oat")) {
+			f = PHASH_OAT;
+		} else if (!strcmp(h, "jsw")) {
+			f = PHASH_JSW;
+		} else if (!strcmp(h, "bingo")) {
+			f = PHASH_BINGO;
+		} else if (!strcmp(h, "icke2")) {
+			f = PHASH_ICKE2;
+		} else if (!strcmp(h, "murmur")) {
+			f = PHASH_MURMUR;
+		}
+		set_phash(f);
+	}
+
 	with (phvec_t keys = ph_read_keys(*argi->args)) {
 		phvec_stats_t ks = phvec_stats(keys);
 

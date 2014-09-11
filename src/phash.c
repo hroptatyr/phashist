@@ -228,10 +228,41 @@ mix() was built out of 36 single-cycle latency instructions in a
 
 
 /* public API */
+static phash_t(*hf)(phkey_t, size_t, phash_t) = icke2;
+
 phash_t
 phash(phkey_t key, size_t len, phash_t salt)
 {
-	return icke2(key, len, salt);
+	return hf(key, len, salt);
+}
+
+void
+set_phash(phfun_t f)
+{
+	switch (f) {
+	case PHASH_OAT:
+		hf = oat;
+		break;
+	case PHASH_BOB:
+		hf = bob;
+		break;
+	case PHASH_JSW:
+		hf = jsw;
+		break;
+	case PHASH_BINGO:
+		hf = bingo;
+		break;
+	case PHASH_MURMUR:
+		hf = murmur;
+		break;
+
+	case PHASH_ICKE2:
+	default:
+	case PHASH_UNK:
+		hf = icke2;
+		break;
+	}
+	return;
 }
 
 /* phash.c ends here */
