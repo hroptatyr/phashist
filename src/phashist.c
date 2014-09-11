@@ -326,7 +326,7 @@ phtups_phash(phtups_t ktups, phash_t salt)
 }
 
 static size_t
-phtups_mktab(phtups_t tups)
+phtups_mktab(phtups_t tups, bool thoroughp)
 {
 /* this is Bob's inittab()
  * put keys in tabb according to key->b_k
@@ -363,10 +363,14 @@ duplicate keys detected: line %zu  vs  line %zu  `%s'",
 				}
 				/* here we could break because
 				 * we already know there are collisions */
+				if (!thoroughp) {
+					goto out;
+				}
 			}
 		}
 		tups->bcnt[bi]++;
 	}
+out:
 	return ncoll;
 }
 
@@ -600,12 +604,10 @@ ph_find(phvec_t keys)
 	badk = 0U;
 	badp = 0U;
 	for (phash_t trysalt = 1U; ; trysalt++) {
-		size_t ncoll;
-
 		/* try and find distinct tuples (a,b) for all keys */
 		phtups_phash(tups, trysalt);
 
-		if ((ncoll = phtups_mktab(tups)) > 0U) {
+		if (phtups_mktab(tups, false) > 0U) {
 			/* there are collisions */
 #define RETRY_MKTAB	(4096U)
 			/* didn't find distinct (a,b) */
@@ -625,9 +627,10 @@ ph_find(phvec_t keys)
 					tups->blen * sizeof(*tups->bcnt));
 				printf("blen now %zu\n", tups->blen);
 			} else {
-				/* we're fucked */
+				/* we're fucked, count the collisions */
 				errno = 0, error("\
-fatal error: cannot find perfect hash, still %zu collisions", ncoll);
+fatal error: cannot find perfect hash, still %zu collisions",
+						 phtups_mktab(tups, true));
 				return -1;
 			}
 			/* reset and try with larger alen/blen */
