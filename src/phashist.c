@@ -61,13 +61,6 @@ typedef struct {
 	phcnt_t lens[];
 } *phvec_stats_t;
 
-struct qitem_s {
-	phash_t b;
-	phcnt_t par;
-	phcnt_t new;
-	phcnt_t old;
-};
-
 typedef struct {
 	phvec_t keys;
 	phash_t salt;
@@ -75,10 +68,6 @@ typedef struct {
 	size_t alen;
 	size_t blen;
 	phcnt_t *bcnt;
-	/* array of size SMAX
-	 * whose i-th value is the index of the key with hash I,
-	 * values >= keys->n denote invalid indices */
-	phcnt_t *hash;
 
 	struct {
 		phash_t a;
@@ -283,7 +272,6 @@ make_tups(phvec_t keys)
 	guess_lengths(&res->alen, &res->blen, res->smax, keys->n);
 	/* and some counters for the distribution of b-values */
 	res->bcnt = malloc(res->blen * sizeof(*res->bcnt));
-	res->hash = malloc(res->smax * sizeof(*res->hash));
 	return res;
 }
 
@@ -376,8 +364,20 @@ out:
 
 #define NIL_HASH	((phash_t)-1)
 
+struct qitem_s {
+	phash_t b;
+	phcnt_t par;
+	phcnt_t new;
+	phcnt_t old;
+};
+
+struct augm_ctx_s {
+	struct qitem_s *tq;
+	phcnt_t *ht;
+};
+
 static bool
-_apply(struct qitem_s *tabq, phtups_t tups, phcnt_t tail, bool rollbackp)
+_apply(const struct augm_ctx_s ctx, phtups_t tups, phcnt_t tail, bool rollbackp)
 {
 /* try and apply an augmenting list */
 	const phvec_t keys = tups->keys;
@@ -388,9 +388,9 @@ _apply(struct qitem_s *tabq, phtups_t tups, phcnt_t tail, bool rollbackp)
 		phash_t stabb;
 
 		/* find child's parent */
-		par = tabq[chld].par;
+		par = ctx.tq[chld].par;
 		/* find parent's list of siblings */
-		pb = tabq[par].b;
+		pb = ctx.tq[par].b;
 
 		/* erase old hash values */
 		stabb = scramble[pb];
@@ -399,19 +399,19 @@ _apply(struct qitem_s *tabq, phtups_t tups, phcnt_t tail, bool rollbackp)
 			if (tups->tups[i].b == pb) {
 				const phash_t h = tups->tups[i].a ^ stabb;
 
-				if (i == tups->hash[h]) {
+				if (i == ctx.ht[h]) {
 					/* erase hash for all of
 					 * child's siblings */
-					tups->hash[h] = NIL_HASH;
+					ctx.ht[h] = NIL_HASH;
 				}
 			}
 		}
 
 		/* change the hashes of all parent siblings */
 		if (UNLIKELY(rollbackp)) {
-			pb = tabq[par].b = tabq[chld].old;
+			pb = ctx.tq[par].b = ctx.tq[chld].old;
 		} else {
-			pb = tabq[par].b = tabq[chld].new;
+			pb = ctx.tq[par].b = ctx.tq[chld].new;
 		}
 
 		/* set new hash values */
@@ -424,13 +424,13 @@ _apply(struct qitem_s *tabq, phtups_t tups, phcnt_t tail, bool rollbackp)
 					/* root never had a hash */
 					;
 				} else if (LIKELY(!rollbackp) &&
-					   UNLIKELY(tups->hash[h] < keys->n)) {
+					   UNLIKELY(ctx.ht[h] < keys->n)) {
 					/* very rare: roll back any changes */
-					(void)_apply(tabq, tups, tail, true);
+					(void)_apply(ctx, tups, tail, true);
 					/* failure, collision */
 					return false;
 				} else {
-					tups->hash[h] = i;
+					ctx.ht[h] = i;
 				}
 			}
 		}
@@ -439,7 +439,7 @@ _apply(struct qitem_s *tabq, phtups_t tups, phcnt_t tail, bool rollbackp)
 }
 
 static bool
-_augmp(struct qitem_s *tabq, phtups_t tups, phash_t item)
+_augmp(const struct augm_ctx_s ctx, phtups_t tups, phash_t item)
 {
 /* this is Bob's augment()
  * Construct a spanning tree of *b*s with *item* as root, where each
@@ -465,7 +465,7 @@ _augmp(struct qitem_s *tabq, phtups_t tups, phash_t item)
 	static size_t waterz;
 
 	/* initialise root of spanning tree */
-	tabq[0U].b = item;
+	ctx.tq[0U].b = item;
 
 	if (UNLIKELY(tups->blen > waterz)) {
 		water = recalloc(water, waterz, tups->blen, sizeof(*water));
@@ -474,7 +474,7 @@ _augmp(struct qitem_s *tabq, phtups_t tups, phash_t item)
 
 	for (phcnt_t q = 0U, tail = 1U; q < tail; q++) {
 		/* the b for this node */
-		phash_t bq = tabq[q].b;
+		phash_t bq = ctx.tq[q].b;
 
 		for (size_t k = 0U; k < limit; k++) {
 			/* the b that this k maps to */
@@ -495,7 +495,7 @@ _augmp(struct qitem_s *tabq, phtups_t tups, phash_t item)
 					break;
 				}
 				/* otherwise h < hmax */
-				if ((chld = tups->hash[h]) < keys->n) {
+				if ((chld = ctx.ht[h]) < keys->n) {
 					phash_t hitb = tups->tups[chld].b;
 
 					if (chldb && (chldb != hitb)) {
@@ -514,7 +514,7 @@ _augmp(struct qitem_s *tabq, phtups_t tups, phash_t item)
 				continue;
 			}
 
-			tabq[tail++] = (struct qitem_s){
+			ctx.tq[tail++] = (struct qitem_s){
 				.b = chldb,
 				.new = k,
 				.old = bq,
@@ -524,7 +524,7 @@ _augmp(struct qitem_s *tabq, phtups_t tups, phash_t item)
 			/* add chldb to the queue of reachable things */
 			if (chldb) {
 				water[chldb] = wmax;
-			} else if (_apply(tabq, tups, tail, false)) {
+			} else if (_apply(ctx, tups, tail, false)) {
 				/* found a *k* with no collisions?
 				 * and added it to the perfect hash */
 				return true;
@@ -544,6 +544,10 @@ phtups_perfp(phtups_t tups)
 	/* array of size BLEN + 1U, implementing a queue */
 	static struct qitem_s *tabq;
 	static size_t tabqz;
+	/* array of size SMAX
+	 * whose i-th value is the index of the key with hash I,
+	 * values >= keys->n denote invalid indices */
+	static phcnt_t *hash;
 	size_t maxk = 0U;
 
 	if (UNLIKELY(tups->blen + 1U > tabqz)) {
@@ -552,11 +556,17 @@ phtups_perfp(phtups_t tups)
 	}
 	/* reset queue */
 	memset(tabq, 0, tabqz * sizeof(*tabq));
+
+	/* instantiate hash table */
+	if (UNLIKELY(hash == NULL)) {
+		hash = malloc(tups->smax * sizeof(*hash));
+	}
 	/* invalidate hash table */
 	for (size_t i = 0U; i < tups->smax; i++) {
-		tups->hash[i] = NIL_HASH;
+		hash[i] = NIL_HASH;
 	}
 
+	/* find largest bcnt value */
 	for (size_t i = 0U; i < tups->blen; i++) {
 		if (tups->bcnt[i] > maxk) {
 			maxk = tups->bcnt[i];
@@ -567,7 +577,8 @@ phtups_perfp(phtups_t tups)
 	for (size_t j = maxk; j > 0U; j--) {
 		for (phash_t i = 0U; i < tups->blen; i++) {
 			if (tups->bcnt[i] == j) {
-				if (!_augmp(tabq, tups, i)) {
+				struct augm_ctx_s ctx = {tabq, hash};
+				if (!_augmp(ctx, tups, i)) {
 					errno = 0, error("\
 failed to map group of size %zu for tab size %zu", j, tups->blen);
 					return false;
