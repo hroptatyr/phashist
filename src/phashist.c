@@ -67,7 +67,7 @@ typedef struct {
 	size_t smax;
 	size_t alen;
 	size_t blen;
-	phcnt_t *bcnt;
+	phash_t *bmap;
 
 	struct {
 		phash_t a;
@@ -271,14 +271,14 @@ make_tups(phvec_t keys)
 	res->smax = 1UL << xilogb(keys->n);
 	guess_lengths(&res->alen, &res->blen, res->smax, keys->n);
 	/* and some counters for the distribution of b-values */
-	res->bcnt = malloc(res->blen * sizeof(*res->bcnt));
+	res->bmap = malloc(res->blen * sizeof(*res->bmap));
 	return res;
 }
 
 static void
 free_tups(phtups_t ktups)
 {
-	free(ktups->bcnt);
+	free(ktups->bmap);
 	free(ktups);
 	return;
 }
@@ -323,9 +323,6 @@ phtups_mktab(phtups_t tups, bool thoroughp)
 	const phvec_t keys = tups->keys;
 	size_t ncoll = 0U;
 
-	/* reset counters */
-	memset(tups->bcnt, 0, tups->blen * sizeof(*tups->bcnt));
-
 	/* two keys with the same (a,b) guarantee a collision */
 	for (size_t i = 0U; i < keys->n; i++) {
 		phash_t bi = tups->tups[i].b;
@@ -356,7 +353,6 @@ duplicate keys detected: line %zu  vs  line %zu  `%s'",
 				}
 			}
 		}
-		tups->bcnt[bi]++;
 	}
 out:
 	return ncoll;
@@ -541,54 +537,45 @@ _augmp(const struct augm_ctx_s ctx, phtups_t tups, phash_t item)
 static bool
 phtups_perfp(phtups_t tups)
 {
-	/* array of size BLEN + 1U, implementing a queue */
-	static struct qitem_s *tabq;
-	static size_t tabqz;
-	/* array of size SMAX
-	 * whose i-th value is the index of the key with hash I,
-	 * values >= keys->n denote invalid indices */
-	static phcnt_t *hash;
-	size_t maxk = 0U;
+/* greedy approach */
+	const size_t bmpz = tups->blen * sizeof(*tups->bmap);
+	const phvec_t keys = tups->keys;
+	phcnt_t *xcnt;
 
-	if (UNLIKELY(tups->blen + 1U > tabqz)) {
-		tabqz = tups->blen + 1U;
-		tabq = realloc(tabq, tabqz * sizeof(*tabq));
-	}
-	/* reset queue */
-	memset(tabq, 0, tabqz * sizeof(*tabq));
-
-	/* instantiate hash table */
-	if (UNLIKELY(hash == NULL)) {
-		hash = malloc(tups->smax * sizeof(*hash));
-	}
-	/* invalidate hash table */
-	for (size_t i = 0U; i < tups->smax; i++) {
-		hash[i] = NIL_HASH;
+	if (UNLIKELY(tups->bmap == NULL)) {
+		tups->bmap = malloc(bmpz);
+	} else {
+		tups->bmap = realloc(tups->bmap, bmpz);
 	}
 
-	/* find largest bcnt value */
-	for (size_t i = 0U; i < tups->blen; i++) {
-		if (tups->bcnt[i] > maxk) {
-			maxk = tups->bcnt[i];
-		}
-	}
+	/* rinse b-map */
+	memset(tups->bmap, 0, bmpz);
 
-	/* in descending order by number of keys, map all *b*s */
-	for (size_t j = maxk; j > 0U; j--) {
-		for (phash_t i = 0U; i < tups->blen; i++) {
-			if (tups->bcnt[i] == j) {
-				struct augm_ctx_s ctx = {tabq, hash};
-				if (!_augmp(ctx, tups, i)) {
-					errno = 0, error("\
-failed to map group of size %zu for tab size %zu", j, tups->blen);
-					return false;
-				}
-			}
+	/* generate the bitset (or counting set really) */
+	xcnt = malloc(tups->smax * sizeof(*xcnt));
+
+retry:
+	/* rinse xcnt */
+	memset(xcnt, 0, tups->smax * sizeof(*xcnt));
+	for (size_t i = 0; i < keys->n; i++) {
+		phash_t h = tups->tups[i].a ^ tups->bmap[tups->tups[i].b];
+
+		if (tups->bmap[tups->tups[i].b] >= tups->smax) {
+			goto fail;
+		} else if (xcnt[h & (tups->smax - 1U)]++) {
+			/* grrr */
+			tups->bmap[tups->tups[i].b]++;
+			goto retry;
 		}
 	}
 
 	/* PERFICK, we found a perfect hash */
 	return true;
+
+fail:
+	errno = 0, error("\
+failed to map groups for tab size %zu", tups->blen);
+	return false;
 }
 
 static phtups_t
@@ -630,9 +617,6 @@ ph_find(phvec_t keys)
 				res->alen *= 2U;
 			} else if (res->blen < res->smax) {
 				res->blen *= 2U;
-				res->bcnt = realloc(
-					res->bcnt,
-					res->blen * sizeof(*res->bcnt));
 			} else {
 				/* we're fucked, count the collisions */
 				errno = 0, error("\
@@ -651,9 +635,6 @@ fatal error: cannot find perfect hash, still %zu collisions",
 				continue;
 			} else if (res->blen < res->smax) {
 				res->blen *= 2U;
-				res->bcnt = realloc(
-					res->bcnt,
-					res->blen * sizeof(*res->bcnt));
 
 				/* we know this salt got us perfectly
 				 * distinct (a,b) */
@@ -720,35 +701,35 @@ ph_genc(phtups_t tups)
 			puts("static uint_fast16_t tab[] = {");
 		}
 
-		if (tups->blen < 16U) {
+		if (tups->blen < 16U && tups->smax > 0x100U) {
 			for (size_t i = 0U; i < tups->blen; i++) {
-				printf("%3lu, ", scramble[tups->bcnt[i]]);
+				printf("%3lu, ", scramble[tups->bmap[i]]);
 			}
-		} else if (tups->blen < USE_SCRAMBLE) {
+		} else if (tups->blen >= USE_SCRAMBLE) {
 			for (size_t i = 0U; i < tups->blen; i += 8U) {
 				printf("\
 %lu, %lu, %lu, %lu,  %lu, %lu, %lu, %lu,\n",
-				       scramble[tups->bcnt[i + 0U]],
-				       scramble[tups->bcnt[i + 1U]],
-				       scramble[tups->bcnt[i + 2U]],
-				       scramble[tups->bcnt[i + 3U]],
-				       scramble[tups->bcnt[i + 4U]],
-				       scramble[tups->bcnt[i + 5U]],
-				       scramble[tups->bcnt[i + 6U]],
-				       scramble[tups->bcnt[i + 7U]]);
+				       scramble[tups->bmap[i + 0U]],
+				       scramble[tups->bmap[i + 1U]],
+				       scramble[tups->bmap[i + 2U]],
+				       scramble[tups->bmap[i + 3U]],
+				       scramble[tups->bmap[i + 4U]],
+				       scramble[tups->bmap[i + 5U]],
+				       scramble[tups->bmap[i + 6U]],
+				       scramble[tups->bmap[i + 7U]]);
 			}
 		} else {
 			for (size_t i = 0U; i < tups->blen; i += 8U) {
 				printf("\
 %lu, %lu, %lu, %lu,  %lu, %lu, %lu, %lu,\n",
-				       tups->bcnt[i + 0U],
-				       tups->bcnt[i + 1U],
-				       tups->bcnt[i + 2U],
-				       tups->bcnt[i + 3U],
-				       tups->bcnt[i + 4U],
-				       tups->bcnt[i + 5U],
-				       tups->bcnt[i + 6U],
-				       tups->bcnt[i + 7U]);
+				       tups->bmap[i + 0U],
+				       tups->bmap[i + 1U],
+				       tups->bmap[i + 2U],
+				       tups->bmap[i + 3U],
+				       tups->bmap[i + 4U],
+				       tups->bmap[i + 5U],
+				       tups->bmap[i + 6U],
+				       tups->bmap[i + 7U]);
 			}
 		}
 		puts("};\n");
@@ -805,6 +786,10 @@ main(int argc, char *argv[])
 
 			/* generate code */
 			ph_genc(t);
+
+	for (size_t i = 0U; i < t->keys->n; i++) {
+		printf("got (%02zx, %02zx) -> %02zx  %s\n", t->tups[i].a, t->tups[i].b, t->tups[i].a ^ t->bmap[t->tups[i].b], t->keys->k[i]);
+	}
 
 			free_tups(t);
 			break;
