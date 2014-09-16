@@ -364,179 +364,6 @@ out:
 
 #define NIL_HASH	((phash_t)-1)
 
-struct qitem_s {
-	phash_t b;
-	phcnt_t par;
-	phcnt_t new;
-	phcnt_t old;
-};
-
-struct augm_ctx_s {
-	struct qitem_s *tq;
-	phcnt_t *ht;
-};
-
-static bool
-_apply(const struct augm_ctx_s ctx, phtups_t tups, phcnt_t tail, bool rollbackp)
-{
-/* try and apply an augmenting list */
-	const phvec_t keys = tups->keys;
-
-	/* walk from child to parent */
-	for (phcnt_t chld = tail - 1U, par; chld; chld = par) {
-		phash_t pb;
-		phash_t stabb;
-
-		/* find child's parent */
-		par = ctx.tq[chld].par;
-		/* find parent's list of siblings */
-		pb = ctx.tq[par].b;
-
-		/* erase old hash values */
-		stabb = scramble[pb];
-
-		for (size_t i = 0U; i < keys->n; i++) {
-			if (tups->tups[i].b == pb) {
-				const phash_t h = tups->tups[i].a ^ stabb;
-
-				if (i == ctx.ht[h]) {
-					/* erase hash for all of
-					 * child's siblings */
-					ctx.ht[h] = NIL_HASH;
-				}
-			}
-		}
-
-		/* change the hashes of all parent siblings */
-		if (UNLIKELY(rollbackp)) {
-			pb = ctx.tq[par].b = ctx.tq[chld].old;
-		} else {
-			pb = ctx.tq[par].b = ctx.tq[chld].new;
-		}
-
-		/* set new hash values */
-		stabb = scramble[pb];
-		for (size_t i = 0U; i < keys->n; i++) {
-			if (tups->tups[i].b == pb) {
-				const phash_t h = tups->tups[i].a ^ stabb;
-
-				if (UNLIKELY(rollbackp && par == 0U)) {
-					/* root never had a hash */
-					;
-				} else if (LIKELY(!rollbackp) &&
-					   UNLIKELY(ctx.ht[h] < keys->n)) {
-					/* very rare: roll back any changes */
-					(void)_apply(ctx, tups, tail, true);
-					/* failure, collision */
-					return false;
-				} else {
-					ctx.ht[h] = i;
-				}
-			}
-		}
-	}
-	return true;
-}
-
-static bool
-_augmp(const struct augm_ctx_s ctx, phtups_t tups, phash_t item)
-{
-/* this is Bob's augment()
- * Construct a spanning tree of *b*s with *item* as root, where each
- * parent can have all its hashes changed (by some new val_b) with
- * at most one collision, and each child is the b of that collision.
- *
- * I got this from Tarjan's "Data Structures and Network Algorithms".  The
- * path from *item* to a *b* that can be remapped with no collision is
- * an "augmenting path".  Change values of tab[b] along the path so that
- * the unmapped key gets mapped and the unused hash value gets used.
- *
- * Assuming 1 key per b, if m out of n hash values are still unused,
- * you should expect the transitive closure to cover n/m nodes before
- * an unused node is found.  Sum(i=1..n)(n/i) is about nlogn, so expect
- * this approach to take about nlogn time to map all single-key b's.
- */
-#define USE_SCRAMBLE	(2048U)
-	const size_t limit = tups->blen < USE_SCRAMBLE ? tups->smax : 0x100U;
-	const phvec_t keys = tups->keys;
-	const phash_t hmax = tups->smax;
-	const phcnt_t wmax = item + 1U;
-	static phcnt_t *water;
-	static size_t waterz;
-
-	/* initialise root of spanning tree */
-	ctx.tq[0U].b = item;
-
-	if (UNLIKELY(tups->blen > waterz)) {
-		water = recalloc(water, waterz, tups->blen, sizeof(*water));
-		waterz = tups->blen;
-	}
-
-	for (phcnt_t q = 0U, tail = 1U; q < tail; q++) {
-		/* the b for this node */
-		phash_t bq = ctx.tq[q].b;
-
-		for (size_t k = 0U; k < limit; k++) {
-			/* the b that this k maps to */
-			phash_t chldb = 0U;
-			size_t i;
-
-			for (i = 0U; i < keys->n; i++) {
-				if (LIKELY(tups->tups[i].b != bq)) {
-					continue;
-				}
-				/* otherwise it's a b-value */
-				const phash_t ai = tups->tups[i].a;
-				const phash_t h = ai ^ scramble[k];
-				phcnt_t chld;
-
-				if (h >= hmax) {
-					/* out of bounds */
-					break;
-				}
-				/* otherwise h < hmax */
-				if ((chld = ctx.ht[h]) < keys->n) {
-					phash_t hitb = tups->tups[chld].b;
-
-					if (chldb && (chldb != hitb)) {
-						break;
-					} else if (!chldb) {
-						chldb = hitb;
-						if (water[chldb] == wmax) {
-							/* already explored */
-							break;
-						}
-					}
-				}
-			}
-			if (i < keys->n) {
-				/* bq with k has multiple collisions */
-				continue;
-			}
-
-			ctx.tq[tail++] = (struct qitem_s){
-				.b = chldb,
-				.new = k,
-				.old = bq,
-				.par = q,
-			};
-
-			/* add chldb to the queue of reachable things */
-			if (chldb) {
-				water[chldb] = wmax;
-			} else if (_apply(ctx, tups, tail, false)) {
-				/* found a *k* with no collisions?
-				 * and added it to the perfect hash */
-				return true;
-			} else {
-				/* don't know how to handle such a child */
-				tail--;
-			}
-		}
-	}
-	return 0;
-}
-
 /* find a mapping that makes this a perfect hash */
 static bool
 phtups_perfp(phtups_t tups)
@@ -669,7 +496,7 @@ ph_genc(phtups_t tups)
 {
 	puts("#include <stdint.h>\n");
 
-	if (tups->blen >= USE_SCRAMBLE) {
+	if (tups->blen >= SCRAMBLE_LEN) {
 		if (tups->smax > 0xffffU + 1U) {
 			puts("uint_fast32_t scramble[] = {");
 			for (size_t i = 0; i <= 0xffU; i += 4U) {
@@ -699,7 +526,7 @@ ph_genc(phtups_t tups)
 	if (tups->blen > 0U) {
 		puts("/* small adjustments to A to make values distinct */");
 
-		if (tups->smax <= 0x100U || tups->blen >= USE_SCRAMBLE) {
+		if (tups->smax <= 0x100U || tups->blen >= SCRAMBLE_LEN) {
 			puts("static uint_fast8_t tab[] = {");
 		} else {
 			puts("static uint_fast16_t tab[] = {");
@@ -709,7 +536,7 @@ ph_genc(phtups_t tups)
 			for (size_t i = 0U; i < tups->blen; i++) {
 				printf("%3lu, ", scramble[tups->bmap[i]]);
 			}
-		} else if (tups->blen >= USE_SCRAMBLE) {
+		} else if (tups->blen >= SCRAMBLE_LEN) {
 			for (size_t i = 0U; i < tups->blen; i += 8U) {
 				printf("\
 %lu, %lu, %lu, %lu,  %lu, %lu, %lu, %lu,\n",
