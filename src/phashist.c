@@ -529,6 +529,12 @@ fatal error: cannot find perfect hash, still %zu collisions",
 				/* we know this salt got us perfectly
 				 * distinct (a,b) */
 				trysalt--;
+			} else if (res->smax <= 4U * alen_max) {
+				res->smax *= 2U;
+
+				/* we know this salt got us perfectly
+				 * distinct (a,b) */
+				trysalt--;
 			} else {
 				errno = 0, error("\
 fatal error: cannot perfect hash");
