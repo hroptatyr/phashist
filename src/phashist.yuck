@@ -7,6 +7,8 @@ Usage: phashist COMMAND [KEYS]
 
 Usage: phashist build [KEYS]
 
+  -k N              Build a N-perfect hash-table, default 1.
+
 
 Usage: phashist print [KEYS]
 

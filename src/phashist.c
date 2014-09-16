@@ -64,6 +64,8 @@ typedef struct {
 typedef struct {
 	phvec_t keys;
 	phash_t salt;
+	/* for k-perfect hashes */
+	phcnt_t k;
 	size_t smax;
 	size_t alen;
 	size_t blen;
@@ -262,7 +264,7 @@ init_scramble(const size_t smax)
 }
 
 static phtups_t
-make_tups(phvec_t keys)
+make_tups(phvec_t keys, phcnt_t k)
 {
 	phtups_t res = malloc(sizeof(*res) + keys->n * sizeof(*res->tups));
 
@@ -272,6 +274,8 @@ make_tups(phvec_t keys)
 	guess_lengths(&res->alen, &res->blen, res->smax, keys->n);
 	/* and some counters for the distribution of b-values */
 	res->bmap = malloc(res->blen * sizeof(*res->bmap));
+	/* assign k-perfection value */
+	res->k = k;
 	return res;
 }
 
@@ -562,7 +566,7 @@ retry:
 
 		if (tups->bmap[tups->tups[i].b] >= tups->smax) {
 			goto fail;
-		} else if (xcnt[h & (tups->smax - 1U)]++) {
+		} else if (xcnt[h & (tups->smax - 1U)]++ >= tups->k) {
 			/* grrr */
 			tups->bmap[tups->tups[i].b]++;
 			goto retry;
@@ -579,7 +583,7 @@ failed to map groups for tab size %zu", tups->blen);
 }
 
 static phtups_t
-ph_find(phvec_t keys)
+ph_find(phvec_t keys, phcnt_t k)
 {
 /* try and find a perfect hash function
  * return the successful initializer for the initial hash.
@@ -590,7 +594,7 @@ ph_find(phvec_t keys)
 	phcnt_t badk = 0U;
 	/* how many times did phvec_mkperf() fail */
 	phcnt_t badp;
-	phtups_t res = make_tups(keys);
+	phtups_t res = make_tups(keys, k);
 
 	/* more init'ting (could go into make_tups() really */
 	init_scramble(res->smax);
@@ -777,10 +781,22 @@ main(int argc, char *argv[])
 	with (phvec_t keys = ph_read_keys(*argi->args)) {
 		switch (argi->cmd) {
 		case PHASHIST_CMD_BUILD: {
+			const char *karg;
 			phtups_t t;
+			phcnt_t k = 1U;
+
+			if ((karg = argi->build.dashk_arg)) {
+				char *on;
+				if (!(k = strtoul(karg, &on, 0)) || *on) {
+					errno = 0, error("\
+Invalid argument to -k: `%s'\n\
+Valid values are integers >= 1", karg);
+					break;
+				}
+			}
 
 			/* find teh hash */
-			if ((t = ph_find(keys)) == NULL) {
+			if ((t = ph_find(keys, k)) == NULL) {
 				break;
 			}
 
