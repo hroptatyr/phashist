@@ -371,6 +371,10 @@ phtups_perfp(phtups_t tups)
 /* greedy approach */
 	const size_t bmpz = tups->blen * sizeof(*tups->bmap);
 	const phvec_t keys = tups->keys;
+	phcnt_t bcnt[tups->blen];
+	phash_t bsrt[tups->blen];
+	phcnt_t nsrt = 0U;
+	phcnt_t maxb = 0U;
 	phcnt_t *xcnt;
 
 	if (UNLIKELY(tups->bmap == NULL)) {
@@ -382,21 +386,76 @@ phtups_perfp(phtups_t tups)
 	/* rinse b-map */
 	memset(tups->bmap, 0, bmpz);
 
+	/* rinse b-counts */
+	memset(bcnt, 0, sizeof(bcnt));
+
+	for (size_t i = 0U; i < keys->n; i++) {
+		if (++bcnt[tups->tups[i].b] > maxb) {
+			maxb = bcnt[tups->tups[i].b];
+		}
+	}
+	/* sort the b's */
+	for (phcnt_t m = maxb; m; m--) {
+		for (size_t i = 0U; i < tups->blen; i++) {
+			if (bcnt[i] == m) {
+				bsrt[nsrt++] = i;
+			}
+		}
+	}
+#if 1
+	/* now we've got tups->tups[*].b sorted in bsrt[] */
+	for (size_t i = 0U; i < nsrt; i++) {
+		printf("bsrt[%zu] %02zx (%zu)\n", i, bsrt[i], bcnt[bsrt[i]]);
+	}
+#endif
+
 	/* generate the bitset (or counting set really) */
 	xcnt = malloc(tups->smax * sizeof(*xcnt));
 
 retry:
 	/* rinse xcnt */
 	memset(xcnt, 0, tups->smax * sizeof(*xcnt));
-	for (size_t i = 0; i < keys->n; i++) {
+#if 0
+	for (size_t b = 0U; b < nsrt; b++) {
+		for (size_t i = 0U; i < keys->n; i++) {
+			if (tups->tups[i].b == b) {
+				phash_t h = tups->tups[i].a ^ tups->bmap[b];
+
+				h &= tups->smax - 1U;
+				if (tups->bmap[b] >= tups->smax) {
+					goto fail;
+				} else if (xcnt[h]++ >= tups->k) {
+					/* try another bmap value */
+					tups->bmap[b]++;
+					goto retry;
+				}
+			}
+		}
+	}
+#else
+	for (size_t i = 0U; i < keys->n; i++) {
+		const phash_t b = tups->tups[i].b;
+		phash_t h = tups->tups[i].a ^ tups->bmap[b];
+
+		h &= tups->smax - 1U;
+		if (tups->bmap[b] >= tups->smax) {
+			goto fail;
+		} else if (xcnt[h]++ >= tups->k) {
+			/* try another bmap value */
+			tups->bmap[b]++;
+			goto retry;
+		}
+	}
+#endif	/* 0 */
+
+
+	memset(xcnt, 0, tups->smax * sizeof(*xcnt));
+	for (size_t i = 0U; i < keys->n; i++) {
 		phash_t h = tups->tups[i].a ^ tups->bmap[tups->tups[i].b];
 
-		if (tups->bmap[tups->tups[i].b] >= tups->smax) {
-			goto fail;
-		} else if (xcnt[h & (tups->smax - 1U)]++ >= tups->k) {
-			/* grrr */
-			tups->bmap[tups->tups[i].b]++;
-			goto retry;
+		h &= tups->smax - 1U;
+		if (++xcnt[h] > tups->k) {
+			printf("%02zx %02zu\n", h, xcnt[h]);
 		}
 	}
 
@@ -534,7 +593,7 @@ ph_genc(phtups_t tups)
 
 		if (tups->blen < 16U && tups->smax > 0x100U) {
 			for (size_t i = 0U; i < tups->blen; i++) {
-				printf("%3lu, ", scramble[tups->bmap[i]]);
+				printf("0x%03lxU, ", scramble[tups->bmap[i]]);
 			}
 		} else if (tups->blen >= SCRAMBLE_LEN) {
 			for (size_t i = 0U; i < tups->blen; i += 8U) {
@@ -552,7 +611,7 @@ ph_genc(phtups_t tups)
 		} else {
 			for (size_t i = 0U; i < tups->blen; i += 8U) {
 				printf("\
-%lu, %lu, %lu, %lu,  %lu, %lu, %lu, %lu,\n",
+0x%lxU, 0x%lxU, 0x%lxU, 0x%lxU,  0x%lxU, 0x%lxU, 0x%lxU, 0x%lxU,\n",
 				       tups->bmap[i + 0U],
 				       tups->bmap[i + 1U],
 				       tups->bmap[i + 2U],
