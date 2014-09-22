@@ -402,12 +402,6 @@ phtups_perfp(phtups_t tups)
 			}
 		}
 	}
-#if 1
-	/* now we've got tups->tups[*].b sorted in bsrt[] */
-	for (size_t i = 0U; i < nsrt; i++) {
-		printf("bsrt[%zu] %02zx (%zu)\n", i, bsrt[i], bcnt[bsrt[i]]);
-	}
-#endif
 
 	/* generate the bitset (or counting set really) */
 	xcnt = malloc(tups->smax * sizeof(*xcnt));
@@ -631,8 +625,60 @@ ph_genc(phtups_t tups)
 		puts("};\n");
 	}
 
+	puts("typedef uint_fast32_t phash_t;");
 	printf("static const phash_t salt = 0x%zxU * 0x9e3779b9U;\n", tups->salt);
-	printf("static const unsigned int blog = %zuU\n", xilogb(tups->blen));
+	printf("static const unsigned int blog = %zuU;\n", xilogb(tups->blen));
+	printf("static const unsigned int slog = %zuU;\n", xilogb(tups->smax));
+
+	puts("\n\
+static phash_t\n\
+phash(const uint8_t *data, const size_t dlen, phash_t prev)\n\
+{\n\
+/* form lower bits from lower bits, and higher bits from higher bits */\n\
+	register phash_t l = 0U;\n\
+	register phash_t h = 0U;\n\
+\n\
+	for (size_t i = 0U; i < dlen / 4U; i++, l <<= 1U, h >>= 1U) {\n\
+		register const phash_t _4 = ((const uint32_t*)data)[i];\n\
+\n\
+		/* lowest bits */\n\
+		l ^= _4 & 0x07070707U;\n\
+		/* higher bits */\n\
+		h ^= _4 & 0xf8f8f8f8U;\n\
+	}\n\
+	for (size_t i = ((dlen / 4U) * 4U); i < dlen; i++, l <<= 1U, h >>= 1U) {\n\
+		l ^= data[i] & 0x07U;\n\
+		h ^= data[i] & 0xf8U;\n\
+	}\n\
+\n\
+	/* now we've got the lowest 2 bits in l, the highest 6 bits in h */\n\
+	l ^= (l << 5U);\n\
+	l ^= (l >> 23U);\n\
+	h ^= (h << 11U);\n\
+	h ^= (h >> 19U);\n\
+	return prev ^ l ^ h;\n\
+}\n");
+
+	puts("\n\
+static inline const char*\n\
+hash(const char *key, size_t len)\n\
+{\n\
+	static const char *t[] = {");
+
+	for (size_t i = 0U; i < tups->keys->n; i++) {
+		register phash_t a = tups->tups[i].a;
+		register phash_t b = tups->tups[i].b;
+		register phash_t h = a ^ tups->bmap[b] & (tups->smax - 1U);
+
+		printf("\t\t[0x%zx] = \"%s\",\n", h, tups->keys->k[i]);
+	}
+
+	puts("};\n\
+	register phash_t x = phash(key, len, salt);\n\
+	x = (x >> blog) ^ tab[x & ((1U << blog) - 1U)];\n\
+\n\
+	return t[x & ((1U << slog) - 1U)];\n\
+}\n");
 	return;
 }
 
@@ -694,10 +740,6 @@ Valid values are integers >= 1", karg);
 
 			/* generate code */
 			ph_genc(t);
-
-	for (size_t i = 0U; i < t->keys->n; i++) {
-		printf("got (%02zx, %02zx) -> %02zx  %s\n", t->tups[i].a, t->tups[i].b, t->tups[i].a ^ t->bmap[t->tups[i].b], t->keys->k[i]);
-	}
 
 			free_tups(t);
 			break;
