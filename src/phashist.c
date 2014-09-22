@@ -61,24 +61,15 @@ typedef struct {
 	phcnt_t lens[];
 } *phvec_stats_t;
 
-struct qitem_s {
-	phash_t b;
-	phcnt_t par;
-	phcnt_t new;
-	phcnt_t old;
-};
-
 typedef struct {
 	phvec_t keys;
 	phash_t salt;
+	/* for k-perfect hashes */
+	phcnt_t k;
 	size_t smax;
 	size_t alen;
 	size_t blen;
-	phcnt_t *bcnt;
-	/* array of size SMAX
-	 * whose i-th value is the index of the key with hash I,
-	 * values >= keys->n denote invalid indices */
-	phcnt_t *hash;
+	phash_t *bmap;
 
 	struct {
 		phash_t a;
@@ -142,7 +133,7 @@ recalloc(void *x, size_t ol_nmemb, size_t nu_nmemb, size_t membz)
 }
 
 
-static phvec_stats_t
+static __attribute__((unused)) phvec_stats_t
 phvec_stats(phvec_t kv)
 {
 	size_t min = -1UL, max = 0UL;
@@ -174,7 +165,7 @@ phvec_stats(phvec_t kv)
 	return res;
 }
 
-static void
+static __attribute__((unused)) void
 phvec_free_stats(phvec_stats_t ks)
 {
 	if (UNLIKELY(ks == NULL)) {
@@ -273,7 +264,7 @@ init_scramble(const size_t smax)
 }
 
 static phtups_t
-make_tups(phvec_t keys)
+make_tups(phvec_t keys, phcnt_t k)
 {
 	phtups_t res = malloc(sizeof(*res) + keys->n * sizeof(*res->tups));
 
@@ -282,15 +273,16 @@ make_tups(phvec_t keys)
 	res->smax = 1UL << xilogb(keys->n);
 	guess_lengths(&res->alen, &res->blen, res->smax, keys->n);
 	/* and some counters for the distribution of b-values */
-	res->bcnt = malloc(res->blen * sizeof(*res->bcnt));
-	res->hash = malloc(res->smax * sizeof(*res->hash));
+	res->bmap = malloc(res->blen * sizeof(*res->bmap));
+	/* assign k-perfection value */
+	res->k = k;
 	return res;
 }
 
 static void
 free_tups(phtups_t ktups)
 {
-	free(ktups->bcnt);
+	free(ktups->bmap);
 	free(ktups);
 	return;
 }
@@ -335,9 +327,6 @@ phtups_mktab(phtups_t tups, bool thoroughp)
 	const phvec_t keys = tups->keys;
 	size_t ncoll = 0U;
 
-	/* reset counters */
-	memset(tups->bcnt, 0, tups->blen * sizeof(*tups->bcnt));
-
 	/* two keys with the same (a,b) guarantee a collision */
 	for (size_t i = 0U; i < keys->n; i++) {
 		phash_t bi = tups->tups[i].b;
@@ -368,7 +357,6 @@ duplicate keys detected: line %zu  vs  line %zu  `%s'",
 				}
 			}
 		}
-		tups->bcnt[bi]++;
 	}
 out:
 	return ncoll;
@@ -376,212 +364,106 @@ out:
 
 #define NIL_HASH	((phash_t)-1)
 
-static bool
-_apply(struct qitem_s *tabq, phtups_t tups, phcnt_t tail, bool rollbackp)
-{
-/* try and apply an augmenting list */
-	const phvec_t keys = tups->keys;
-
-	/* walk from child to parent */
-	for (phcnt_t chld = tail - 1U, par; chld; chld = par) {
-		phash_t pb;
-		phash_t stabb;
-
-		/* find child's parent */
-		par = tabq[chld].par;
-		/* find parent's list of siblings */
-		pb = tabq[par].b;
-
-		/* erase old hash values */
-		stabb = scramble[pb];
-
-		for (size_t i = 0U; i < keys->n; i++) {
-			if (tups->tups[i].b == pb) {
-				const phash_t h = tups->tups[i].a ^ stabb;
-
-				if (i == tups->hash[h]) {
-					/* erase hash for all of
-					 * child's siblings */
-					tups->hash[h] = NIL_HASH;
-				}
-			}
-		}
-
-		/* change the hashes of all parent siblings */
-		if (UNLIKELY(rollbackp)) {
-			pb = tabq[par].b = tabq[chld].old;
-		} else {
-			pb = tabq[par].b = tabq[chld].new;
-		}
-
-		/* set new hash values */
-		stabb = scramble[pb];
-		for (size_t i = 0U; i < keys->n; i++) {
-			if (tups->tups[i].b == pb) {
-				const phash_t h = tups->tups[i].a ^ stabb;
-
-				if (UNLIKELY(rollbackp && par == 0U)) {
-					/* root never had a hash */
-					;
-				} else if (LIKELY(!rollbackp) &&
-					   UNLIKELY(tups->hash[h] < keys->n)) {
-					/* very rare: roll back any changes */
-					(void)_apply(tabq, tups, tail, true);
-					/* failure, collision */
-					return false;
-				} else {
-					tups->hash[h] = i;
-				}
-			}
-		}
-	}
-	return true;
-}
-
-static bool
-_augmp(struct qitem_s *tabq, phtups_t tups, phash_t item)
-{
-/* this is Bob's augment()
- * Construct a spanning tree of *b*s with *item* as root, where each
- * parent can have all its hashes changed (by some new val_b) with
- * at most one collision, and each child is the b of that collision.
- *
- * I got this from Tarjan's "Data Structures and Network Algorithms".  The
- * path from *item* to a *b* that can be remapped with no collision is
- * an "augmenting path".  Change values of tab[b] along the path so that
- * the unmapped key gets mapped and the unused hash value gets used.
- *
- * Assuming 1 key per b, if m out of n hash values are still unused,
- * you should expect the transitive closure to cover n/m nodes before
- * an unused node is found.  Sum(i=1..n)(n/i) is about nlogn, so expect
- * this approach to take about nlogn time to map all single-key b's.
- */
-#define USE_SCRAMBLE	(2048U)
-	const size_t limit = tups->blen < USE_SCRAMBLE ? tups->smax : 0x100U;
-	const phvec_t keys = tups->keys;
-	const phash_t hmax = tups->smax;
-	const phcnt_t wmax = item + 1U;
-	static phcnt_t *water;
-	static size_t waterz;
-
-	/* initialise root of spanning tree */
-	tabq[0U].b = item;
-
-	if (UNLIKELY(tups->blen > waterz)) {
-		water = recalloc(water, waterz, tups->blen, sizeof(*water));
-		waterz = tups->blen;
-	}
-
-	for (phcnt_t q = 0U, tail = 1U; q < tail; q++) {
-		/* the b for this node */
-		phash_t bq = tabq[q].b;
-
-		for (size_t k = 0U; k < limit; k++) {
-			/* the b that this k maps to */
-			phash_t chldb = 0U;
-			size_t i;
-
-			for (i = 0U; i < keys->n; i++) {
-				if (LIKELY(tups->tups[i].b != bq)) {
-					continue;
-				}
-				/* otherwise it's a b-value */
-				const phash_t ai = tups->tups[i].a;
-				const phash_t h = ai ^ scramble[k];
-				phcnt_t chld;
-
-				if (h >= hmax) {
-					/* out of bounds */
-					break;
-				}
-				/* otherwise h < hmax */
-				if ((chld = tups->hash[h]) < keys->n) {
-					phash_t hitb = tups->tups[chld].b;
-
-					if (chldb && (chldb != hitb)) {
-						break;
-					} else if (!chldb) {
-						chldb = hitb;
-						if (water[chldb] == wmax) {
-							/* already explored */
-							break;
-						}
-					}
-				}
-			}
-			if (i < keys->n) {
-				/* bq with k has multiple collisions */
-				continue;
-			}
-
-			tabq[tail++] = (struct qitem_s){
-				.b = chldb,
-				.new = k,
-				.old = bq,
-				.par = q,
-			};
-
-			/* add chldb to the queue of reachable things */
-			if (chldb) {
-				water[chldb] = wmax;
-			} else if (_apply(tabq, tups, tail, false)) {
-				/* found a *k* with no collisions?
-				 * and added it to the perfect hash */
-				return true;
-			} else {
-				/* don't know how to handle such a child */
-				tail--;
-			}
-		}
-	}
-	return 0;
-}
-
 /* find a mapping that makes this a perfect hash */
 static bool
 phtups_perfp(phtups_t tups)
 {
-	/* array of size BLEN + 1U, implementing a queue */
-	static struct qitem_s *tabq;
-	static size_t tabqz;
-	size_t maxk = 0U;
+/* greedy approach */
+	const size_t bmpz = tups->blen * sizeof(*tups->bmap);
+	const phvec_t keys = tups->keys;
+	phcnt_t bcnt[tups->blen];
+	phash_t bsrt[tups->blen];
+	phcnt_t nsrt = 0U;
+	phcnt_t maxb = 0U;
+	phcnt_t *xcnt;
 
-	if (UNLIKELY(tups->blen + 1U > tabqz)) {
-		tabqz = tups->blen + 1U;
-		tabq = realloc(tabq, tabqz * sizeof(*tabq));
-	}
-	/* reset queue */
-	memset(tabq, 0, tabqz * sizeof(*tabq));
-	/* invalidate hash table */
-	for (size_t i = 0U; i < tups->smax; i++) {
-		tups->hash[i] = NIL_HASH;
+	if (UNLIKELY(tups->bmap == NULL)) {
+		tups->bmap = malloc(bmpz);
+	} else {
+		tups->bmap = realloc(tups->bmap, bmpz);
 	}
 
-	for (size_t i = 0U; i < tups->blen; i++) {
-		if (tups->bcnt[i] > maxk) {
-			maxk = tups->bcnt[i];
+	/* rinse b-map */
+	memset(tups->bmap, 0, bmpz);
+
+	/* rinse b-counts */
+	memset(bcnt, 0, sizeof(bcnt));
+
+	for (size_t i = 0U; i < keys->n; i++) {
+		if (++bcnt[tups->tups[i].b] > maxb) {
+			maxb = bcnt[tups->tups[i].b];
+		}
+	}
+	/* sort the b's */
+	for (phcnt_t m = maxb; m; m--) {
+		for (size_t i = 0U; i < tups->blen; i++) {
+			if (bcnt[i] == m) {
+				bsrt[nsrt++] = i;
+			}
 		}
 	}
 
-	/* in descending order by number of keys, map all *b*s */
-	for (size_t j = maxk; j > 0U; j--) {
-		for (phash_t i = 0U; i < tups->blen; i++) {
-			if (tups->bcnt[i] == j) {
-				if (!_augmp(tabq, tups, i)) {
-					errno = 0, error("\
-failed to map group of size %zu for tab size %zu", j, tups->blen);
-					return false;
+	/* generate the bitset (or counting set really) */
+	xcnt = malloc(tups->smax * sizeof(*xcnt));
+
+retry:
+	/* rinse xcnt */
+	memset(xcnt, 0, tups->smax * sizeof(*xcnt));
+#if 0
+	for (size_t b = 0U; b < nsrt; b++) {
+		for (size_t i = 0U; i < keys->n; i++) {
+			if (tups->tups[i].b == b) {
+				phash_t h = tups->tups[i].a ^ tups->bmap[b];
+
+				h &= tups->smax - 1U;
+				if (tups->bmap[b] >= tups->smax) {
+					goto fail;
+				} else if (xcnt[h]++ >= tups->k) {
+					/* try another bmap value */
+					tups->bmap[b]++;
+					goto retry;
 				}
 			}
+		}
+	}
+#else
+	for (size_t i = 0U; i < keys->n; i++) {
+		const phash_t b = tups->tups[i].b;
+		phash_t h = tups->tups[i].a ^ tups->bmap[b];
+
+		h &= tups->smax - 1U;
+		if (tups->bmap[b] >= tups->smax) {
+			goto fail;
+		} else if (xcnt[h]++ >= tups->k) {
+			/* try another bmap value */
+			tups->bmap[b]++;
+			goto retry;
+		}
+	}
+#endif	/* 0 */
+
+
+	memset(xcnt, 0, tups->smax * sizeof(*xcnt));
+	for (size_t i = 0U; i < keys->n; i++) {
+		phash_t h = tups->tups[i].a ^ tups->bmap[tups->tups[i].b];
+
+		h &= tups->smax - 1U;
+		if (++xcnt[h] > tups->k) {
+			printf("%02zx %02zu\n", h, xcnt[h]);
 		}
 	}
 
 	/* PERFICK, we found a perfect hash */
 	return true;
+
+fail:
+	errno = 0, error("\
+failed to map groups for tab size %zu", tups->blen);
+	return false;
 }
 
-static int
-ph_find(phvec_t keys)
+static phtups_t
+ph_find(phvec_t keys, phcnt_t k)
 {
 /* try and find a perfect hash function
  * return the successful initializer for the initial hash.
@@ -592,22 +474,20 @@ ph_find(phvec_t keys)
 	phcnt_t badk = 0U;
 	/* how many times did phvec_mkperf() fail */
 	phcnt_t badp;
-	phtups_t tups = make_tups(keys);
+	phtups_t res = make_tups(keys, k);
 
 	/* more init'ting (could go into make_tups() really */
-	init_scramble(tups->smax);
-	alen_max = tups->smax;
-
-	printf("smax %zu  alen %zu  blen %zu\n", tups->smax, tups->alen, tups->blen);
+	init_scramble(res->smax);
+	alen_max = res->smax;
 
 	/* actually find the hash now */
 	badk = 0U;
 	badp = 0U;
 	for (phash_t trysalt = 1U; ; trysalt++) {
 		/* try and find distinct tuples (a,b) for all keys */
-		phtups_phash(tups, trysalt);
+		phtups_phash(res, trysalt);
 
-		if (phtups_mktab(tups, false) > 0U) {
+		if (phtups_mktab(res, false) > 0U) {
 			/* there are collisions */
 #define RETRY_MKTAB	(4096U)
 			/* didn't find distinct (a,b) */
@@ -617,36 +497,34 @@ ph_find(phvec_t keys)
 
 				/* try and put more bits in (a,b)
 				 * to make distinct (a,b) more likely */
-			} else if (tups->alen < alen_max) {
-				tups->alen *= 2U;
-				printf("alen now %zu\n", tups->alen);
-			} else if (tups->blen < tups->smax) {
-				tups->blen *= 2U;
-				tups->bcnt = realloc(
-					tups->bcnt,
-					tups->blen * sizeof(*tups->bcnt));
-				printf("blen now %zu\n", tups->blen);
+			} else if (res->alen < alen_max) {
+				res->alen *= 2U;
+			} else if (res->blen < res->smax) {
+				res->blen *= 2U;
 			} else {
 				/* we're fucked, count the collisions */
 				errno = 0, error("\
 fatal error: cannot find perfect hash, still %zu collisions",
-						 phtups_mktab(tups, true));
-				return -1;
+						 phtups_mktab(res, true));
+				goto fail;
 			}
 			/* reset and try with larger alen/blen */
 			badk = 0U;
 			badp = 0U;
 
-		} else if (!phtups_perfp(tups)) {
+		} else if (!phtups_perfp(res)) {
 			/* no collisions, but not perfect either */
 #define RETRY_PERFP	(1U)
 			if (++badp < RETRY_PERFP) {
 				continue;
-			} else if (tups->blen < tups->smax) {
-				tups->blen *= 2U;
-				tups->bcnt = realloc(
-					tups->bcnt,
-					tups->blen * sizeof(*tups->bcnt));
+			} else if (res->blen < res->smax) {
+				res->blen *= 2U;
+
+				/* we know this salt got us perfectly
+				 * distinct (a,b) */
+				trysalt--;
+			} else if (res->smax <= 4U * alen_max) {
+				res->smax *= 2U;
 
 				/* we know this salt got us perfectly
 				 * distinct (a,b) */
@@ -654,20 +532,154 @@ fatal error: cannot find perfect hash, still %zu collisions",
 			} else {
 				errno = 0, error("\
 fatal error: cannot perfect hash");
-				return -1;
+				goto fail;
 			}
 			/* reset badp counter, new salt new luck */
 			badp = 0U;
 		} else {
 			/* yay!!! we've got it */
-			tups->salt = trysalt;
+			res->salt = trysalt;
 			break;
 		}
 	}
-	free_tups(tups);
+	errno = 0, error("built perfect hash table of size %zu", res->blen);
+	return res;
 
-	errno = 0, error("built perfect hash table of size %zu\n", tups->blen);
-	return 0;
+fail:
+	free_tups(res);
+	return NULL;
+}
+
+static void
+ph_genc(phtups_t tups)
+{
+	puts("#include <stdint.h>\n");
+
+	if (tups->blen >= SCRAMBLE_LEN) {
+		if (tups->smax > 0xffffU + 1U) {
+			puts("uint_fast32_t scramble[] = {");
+			for (size_t i = 0; i <= 0xffU; i += 4U) {
+				printf("0x%.8lx, 0x%.8lx, 0x%.8lx, 0x%.8lx,\n",
+				       scramble[i + 0U],
+				       scramble[i + 1U],
+				       scramble[i + 2U],
+				       scramble[i + 3U]);
+			}
+		} else {
+			puts("uint_fast16_t scramble[] = {");
+			for (size_t i = 0U; i <= 0xffU; i+=8) {
+				printf("\
+0x%.4lx, 0x%.4lx, 0x%.4lx, 0x%.4lx, 0x%.4lx, 0x%.4lx, 0x%.4lx, 0x%.4lx,\n",
+				       scramble[i + 0U],
+				       scramble[i + 1U],
+				       scramble[i + 2U],
+				       scramble[i + 3U],
+				       scramble[i + 4U],
+				       scramble[i + 5U],
+				       scramble[i + 6U],
+				       scramble[i + 7U]);
+			}
+		}
+		puts("};\n");
+	}
+	if (tups->blen > 0U) {
+		puts("/* small adjustments to A to make values distinct */");
+
+		if (tups->smax <= 0x100U || tups->blen >= SCRAMBLE_LEN) {
+			puts("static uint_fast8_t tab[] = {");
+		} else {
+			puts("static uint_fast16_t tab[] = {");
+		}
+
+		if (tups->blen < 16U && tups->smax > 0x100U) {
+			for (size_t i = 0U; i < tups->blen; i++) {
+				printf("0x%03lxU, ", scramble[tups->bmap[i]]);
+			}
+		} else if (tups->blen >= SCRAMBLE_LEN) {
+			for (size_t i = 0U; i < tups->blen; i += 8U) {
+				printf("\
+%lu, %lu, %lu, %lu,  %lu, %lu, %lu, %lu,\n",
+				       scramble[tups->bmap[i + 0U]],
+				       scramble[tups->bmap[i + 1U]],
+				       scramble[tups->bmap[i + 2U]],
+				       scramble[tups->bmap[i + 3U]],
+				       scramble[tups->bmap[i + 4U]],
+				       scramble[tups->bmap[i + 5U]],
+				       scramble[tups->bmap[i + 6U]],
+				       scramble[tups->bmap[i + 7U]]);
+			}
+		} else {
+			for (size_t i = 0U; i < tups->blen; i += 8U) {
+				printf("\
+0x%lxU, 0x%lxU, 0x%lxU, 0x%lxU,  0x%lxU, 0x%lxU, 0x%lxU, 0x%lxU,\n",
+				       tups->bmap[i + 0U],
+				       tups->bmap[i + 1U],
+				       tups->bmap[i + 2U],
+				       tups->bmap[i + 3U],
+				       tups->bmap[i + 4U],
+				       tups->bmap[i + 5U],
+				       tups->bmap[i + 6U],
+				       tups->bmap[i + 7U]);
+			}
+		}
+		puts("};\n");
+	}
+
+	puts("typedef uint_fast32_t phash_t;");
+	printf("static const phash_t salt = 0x%zxU * 0x9e3779b9U;\n", tups->salt);
+	printf("static const unsigned int blog = %zuU;\n", xilogb(tups->blen));
+	printf("static const unsigned int slog = %zuU;\n", xilogb(tups->smax));
+
+	puts("\n\
+static phash_t\n\
+phash(const uint8_t *data, const size_t dlen, phash_t prev)\n\
+{\n\
+/* form lower bits from lower bits, and higher bits from higher bits */\n\
+	register phash_t l = 0U;\n\
+	register phash_t h = 0U;\n\
+\n\
+	for (size_t i = 0U; i < dlen / 4U; i++, l <<= 1U, h >>= 1U) {\n\
+		register const phash_t _4 = ((const uint32_t*)data)[i];\n\
+\n\
+		/* lowest bits */\n\
+		l ^= _4 & 0x07070707U;\n\
+		/* higher bits */\n\
+		h ^= _4 & 0xf8f8f8f8U;\n\
+	}\n\
+	for (size_t i = ((dlen / 4U) * 4U); i < dlen; i++, l <<= 1U, h >>= 1U) {\n\
+		l ^= data[i] & 0x07U;\n\
+		h ^= data[i] & 0xf8U;\n\
+	}\n\
+\n\
+	/* now we've got the lowest 2 bits in l, the highest 6 bits in h */\n\
+	l ^= (l << 5U);\n\
+	l ^= (l >> 23U);\n\
+	h ^= (h << 11U);\n\
+	h ^= (h >> 19U);\n\
+	return prev ^ l ^ h;\n\
+}\n");
+
+	puts("\n\
+static inline const char*\n\
+hash(const char *key, size_t len)\n\
+{\n\
+	static const char *t[] = {");
+
+	for (size_t i = 0U; i < tups->keys->n; i++) {
+		register phash_t a = tups->tups[i].a;
+		register phash_t b = tups->tups[i].b;
+		register phash_t h = a ^ tups->bmap[b] & (tups->smax - 1U);
+
+		printf("\t\t[0x%zx] = \"%s\",\n", h, tups->keys->k[i]);
+	}
+
+	puts("};\n\
+	register phash_t x = phash(key, len, salt);\n\
+	x = (x >> blog) ^ tab[x & ((1U << blog) - 1U)];\n\
+\n\
+	return t[x & ((1U << slog) - 1U)];\n\
+}\n");
+	return;
 }
 
 
@@ -705,14 +717,33 @@ main(int argc, char *argv[])
 	}
 
 	with (phvec_t keys = ph_read_keys(*argi->args)) {
-		phvec_stats_t ks = phvec_stats(keys);
-
-
 		switch (argi->cmd) {
-		case PHASHIST_CMD_BUILD:
+		case PHASHIST_CMD_BUILD: {
+			const char *karg;
+			phtups_t t;
+			phcnt_t k = 1U;
+
+			if ((karg = argi->build.dashk_arg)) {
+				char *on;
+				if (!(k = strtoul(karg, &on, 0)) || *on) {
+					errno = 0, error("\
+Invalid argument to -k: `%s'\n\
+Valid values are integers >= 1", karg);
+					break;
+				}
+			}
+
 			/* find teh hash */
-			ph_find(keys);
+			if ((t = ph_find(keys, k)) == NULL) {
+				break;
+			}
+
+			/* generate code */
+			ph_genc(t);
+
+			free_tups(t);
 			break;
+		}
 
 		case PHASHIST_CMD_PERF:;
 			phash_t sum;
@@ -756,7 +787,6 @@ main(int argc, char *argv[])
 			break;
 		}
 
-		phvec_free_stats(ks);
 		ph_free_keys(keys);
 	}
 
